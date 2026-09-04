@@ -15,19 +15,19 @@ data sync, and vector management — built with [Fumadocs](https://fumadocs.dev)
 
 ## Contents
 
-The playbook is organized into six sections under [content/docs](content/docs):
+The playbook is organized into six sections under [content](content):
 
-- **[Workflows and Agents](content/docs/workflows-and-agents)** — patterns, tool/function-calling
+- **[Workflows and Agents](content/workflows-and-agents)** — patterns, tool/function-calling
   design, human-in-the-loop approval workflows, memory
-- **[MCP](content/docs/mcp)** — architecture, building servers and clients, connecting to servers,
+- **[MCP](content/mcp)** — architecture, building servers and clients, connecting to servers,
   authorization and security, debugging and testing
-- **[Observability](content/docs/observability)** — tracing, experiments, evals, monitoring,
+- **[Observability](content/observability)** — tracing, experiments, evals, monitoring,
   prompts, AI gateway
-- **[RAG](content/docs/rag)** — adoption strategy, basic RAG, retrieve-and-rerank, corrective RAG
+- **[RAG](content/rag)** — adoption strategy, basic RAG, retrieve-and-rerank, corrective RAG
   (CRAG), self-RAG, query decomposition, adaptive RAG
-- **[Data Synchronization](content/docs/data-synchronization)** — choosing a sync strategy, change
+- **[Data Synchronization](content/data-synchronization)** — choosing a sync strategy, change
   data capture, batch orchestration, incremental sync and dedup, managed ETL/ELT
-- **[Vector Management](content/docs/vector-management)** — databases, collections, schemas,
+- **[Vector Management](content/vector-management)** — databases, collections, schemas,
   ingestion, indexes, search tuning, model inference, storage optimization, snapshots
 
 ## Requirements
@@ -70,7 +70,7 @@ site-wide exports are also generated:
 
 ## Adding content
 
-New pages go under [content/docs](content/docs) as `.mdx` files. Each section directory has a
+New pages go under [content](content) as `.mdx` files. Each section directory has a
 `meta.json` controlling the sidebar title and page order — add new filenames to its `pages` array.
 See [fumadocs-playbook-plan.md](fumadocs-playbook-plan.md) for the original build plan and content
 authoring conventions (Callouts, Steps, Tabs, Cards, Mermaid diagrams).

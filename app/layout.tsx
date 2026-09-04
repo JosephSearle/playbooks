@@ -4,7 +4,7 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Playbook",
+  title: "Playbooks",
   description: "Personal playbook — agent, RAG, and workflow patterns",
 };
 
