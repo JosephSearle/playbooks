@@ -1,4 +1,12 @@
 {
   "title": "Skill Creation",
-  "pages": ["overview", "skill-structure-and-frontmatter", "writing-effective-descriptions", "progressive-disclosure-and-organization", "workflows-scripts-and-tools", "testing-and-iteration", "distribution-and-sharing"]
+  "pages": [
+    "overview",
+    "skill-structure-and-frontmatter",
+    "writing-effective-descriptions",
+    "progressive-disclosure-and-organization",
+    "workflows-scripts-and-tools",
+    "testing-and-iteration",
+    "distribution-and-sharing"
+  ]
 }
