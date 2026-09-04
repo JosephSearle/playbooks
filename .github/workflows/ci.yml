@@ -63,6 +63,7 @@ jobs:
           name: next-build
           path: .next
           retention-days: 1
+          include-hidden-files: true
 
   secrets:
     name: Secret scan
