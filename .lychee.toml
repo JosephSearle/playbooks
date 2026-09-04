@@ -1,0 +1,14 @@
+# Config for lychee (https://github.com/lycheeverse/lychee), run in CI against
+# a locally-running build of the site to catch broken internal links before merge.
+#
+# CI starts `next start` and points lychee at it, then crawls recursively —
+# this exercises the real Next.js routing/MDX rendering, not just raw file paths.
+
+# Only follow links on the local server; external links are excluded so CI
+# doesn't flake on third-party downtime/rate-limiting.
+include = ["^http://localhost:3000"]
+
+exclude_path = [".next", "node_modules", ".source", ".git"]
+
+accept = [200, 429]
+max_redirects = 5

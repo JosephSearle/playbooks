@@ -1,4 +1,4 @@
-import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
+import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 
 /**
  * Shared layout configuration for the site (nav, links, etc.)
@@ -7,12 +7,12 @@ import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: 'Playbook',
+      title: "Playbook",
     },
     links: [
       {
-        text: 'Docs',
-        url: '/docs',
+        text: "Docs",
+        url: "/docs",
       },
     ],
   };

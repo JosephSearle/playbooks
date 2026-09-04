@@ -1,20 +1,17 @@
-import { source } from '@/lib/source';
-import { notFound } from 'next/navigation';
+import { source } from "@/lib/source";
+import { notFound } from "next/navigation";
 
 export const revalidate = false;
 
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ slug?: string[] }> },
-) {
+export async function GET(_req: Request, { params }: { params: Promise<{ slug?: string[] }> }) {
   const { slug } = await params;
   const page = source.getPage(slug);
   if (!page) notFound();
 
-  const content = await page.data.getText('raw');
+  const content = await page.data.getText("raw");
 
   return new Response(content, {
-    headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+    headers: { "Content-Type": "text/markdown; charset=utf-8" },
   });
 }
 

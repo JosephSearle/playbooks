@@ -1,12 +1,7 @@
-import { source } from '@/lib/source';
-import {
-  DocsPage,
-  DocsBody,
-  DocsDescription,
-  DocsTitle,
-} from 'fumadocs-ui/page';
-import { notFound } from 'next/navigation';
-import { getMDXComponents } from '@/components/mdx';
+import { source } from "@/lib/source";
+import { DocsPage, DocsBody, DocsDescription, DocsTitle } from "fumadocs-ui/page";
+import { notFound } from "next/navigation";
+import { getMDXComponents } from "@/components/mdx";
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
