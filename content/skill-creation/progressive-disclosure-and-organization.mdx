@@ -1,0 +1,132 @@
+---
+title: Progressive Disclosure & Organization
+description: Structuring SKILL.md and its supporting files so Claude loads only what a given task actually needs, as a Skill grows past a single file.
+---
+
+A Skill that starts as one focused `SKILL.md` file naturally accumulates detail — edge cases, API references, domain-specific examples — until keeping it all inline would bloat every single invocation with content most tasks don't need. Progressive disclosure is the organizing principle that keeps a growing Skill efficient: push detail into separate files, and point to them from `SKILL.md` rather than inlining everything.
+
+<Callout type="info">
+  This doc covers **how to organize a Skill's files as it grows** past a single-file `SKILL.md`. It assumes the file-layout basics from [Skill Structure & Frontmatter](./skill-structure-and-frontmatter).
+</Callout>
+
+## Core concepts
+
+- **Keep `SKILL.md` under 500 lines** — once a Skill approaches this, split content into separate files rather than letting the main file keep growing. This isn't an arbitrary limit; every token in `SKILL.md` competes with conversation history and other loaded Skills once it's read.
+- **Match the level of instruction freedom to the task's fragility** — this is the design lens behind every organizational choice below:
+  - **High freedom** (prose guidance): multiple valid approaches, decisions depend on context — e.g., "analyze the code structure, check for bugs, suggest improvements."
+  - **Medium freedom** (templates/pseudocode with parameters): a preferred pattern exists but some variation is fine — e.g., a report-generation function with configurable options.
+  - **Low freedom** (an exact script, no deviation): the operation is fragile or must be consistent — e.g., "run exactly `python scripts/migrate.py --verify --backup`; do not modify the command."
+- **Three organization patterns cover most cases**:
+  - **High-level guide with references** — `SKILL.md` gives a quick-start and points to `FORMS.md`, `REFERENCE.md`, `EXAMPLES.md` for depth Claude loads only when that specific feature comes up.
+  - **Domain-specific organization** — for Skills spanning multiple domains (e.g., a BigQuery Skill touching finance, sales, product, marketing data), split reference files by domain so a question about sales metrics never loads finance schema detail.
+  - **Conditional details** — show basic content inline, link to advanced content only for the harder cases ("For tracked changes, see REDLINING.md; for raw XML details, see OOXML.md").
+- **Keep references exactly one level deep from `SKILL.md`** — every reference file should be linked directly from `SKILL.md`, not from another reference file. When Claude follows a reference chained through multiple files, it may only partially read intermediate files (previewing with something like `head -100`), silently losing information.
+- **Long reference files need their own table of contents** — for any file over roughly 100 lines, put a contents list at the top so a partial read still reveals the full scope of what's available, even if Claude doesn't read the whole file in one pass.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Start with a high-level guide, split off references as they emerge
+
+- **Action**: Keep `SKILL.md`'s body focused on the common path; move anything advanced or infrequently needed to its own file, one level deep.
+  ```markdown
+  # PDF Processing
+
+  ## Quick start
+  Extract text with pdfplumber:
+  \`\`\`python
+  import pdfplumber
+  with pdfplumber.open("file.pdf") as pdf:
+      text = pdf.pages[0].extract_text()
+  \`\`\`
+
+  ## Advanced features
+  **Form filling**: See [FORMS.md](FORMS.md) for the complete guide
+  **API reference**: See [REFERENCE.md](REFERENCE.md) for all methods
+  **Examples**: See [EXAMPLES.md](EXAMPLES.md) for common patterns
+  ```
+- **Result**: A simple text-extraction task never loads `FORMS.md` or `REFERENCE.md` at all — Claude reads only `SKILL.md`'s quick-start section, and reaches for the deeper files exactly when a task calls for form filling or an uncommon method.
+
+</Step>
+<Step>
+
+#### Split by domain when a Skill spans multiple unrelated areas
+
+- **Action**: Organize reference files so a question in one domain never pulls in another's context.
+  ```
+  bigquery-skill/
+  ├── SKILL.md
+  └── reference/
+      ├── finance.md    (revenue, billing metrics)
+      ├── sales.md      (opportunities, pipeline)
+      ├── product.md    (API usage, features)
+      └── marketing.md  (campaigns, attribution)
+  ```
+  ```markdown
+  ## Available datasets
+  **Finance**: Revenue, ARR, billing → See [reference/finance.md](reference/finance.md)
+  **Sales**: Opportunities, pipeline, accounts → See [reference/sales.md](reference/sales.md)
+  ```
+- **Result**: A sales-metrics question reads only `reference/sales.md`; `finance.md`, `product.md`, and `marketing.md` sit on disk consuming zero context tokens until a task actually needs them.
+
+</Step>
+<Step>
+
+#### Add a table of contents to any reference file over ~100 lines
+
+- **Action**: Put a `## Contents` section at the top listing every major section.
+  ```markdown
+  # API Reference
+
+  ## Contents
+  - Authentication and setup
+  - Core methods (create, read, update, delete)
+  - Advanced features (batch operations, webhooks)
+  - Error handling patterns
+  - Code examples
+
+  ## Authentication and setup
+  ...
+  ```
+- **Result**: Even a partial read (e.g., a preview of the first 100 lines) surfaces the file's full scope, so Claude knows what's available to jump to rather than assuming the preview is the whole file.
+
+</Step>
+<Step>
+
+#### Match instruction freedom to the operation's fragility
+
+- **Action**: Write low-freedom, exact instructions for anything destructive or order-dependent; leave genuinely judgment-dependent steps as higher-freedom prose.
+  ```markdown
+  ## Database migration
+  Run exactly this script:
+  \`\`\`bash
+  python scripts/migrate.py --verify --backup
+  \`\`\`
+  Do not modify the command or add additional flags.
+
+  ## Code review process
+  1. Analyze the code structure and organization
+  2. Check for potential bugs or edge cases
+  3. Suggest improvements for readability and maintainability
+  ```
+- **Result**: The migration step has no room for creative deviation on a fragile, hard-to-reverse operation; the code review step trusts Claude's judgment where multiple valid approaches genuinely exist.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Nested references** (`SKILL.md` → `advanced.md` → `details.md`) — Claude may only partially read files reached this way; keep every reference one hop from `SKILL.md`.
+  - **A long reference file with no table of contents** — a partial/preview read then misses content the reader never knew existed.
+  - **Uniformly high-freedom instructions for fragile operations** — a destructive script deserves an exact, low-freedom command, not general guidance trusting Claude to figure out the right invocation.
+  - **Letting `SKILL.md` keep growing past 500 lines instead of splitting it** — this is the single most common cause of a Skill feeling bloated or slow to load.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Skill Structure & Frontmatter](./skill-structure-and-frontmatter)
+- [Workflows, Scripts & Tools](./workflows-scripts-and-tools)

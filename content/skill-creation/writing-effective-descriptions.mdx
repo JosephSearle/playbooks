@@ -1,0 +1,97 @@
+---
+title: Writing Effective Descriptions
+description: The description field is what Claude uses to decide whether a Skill is relevant, before ever reading its body — get this wrong and nothing else about the Skill matters.
+---
+
+Every Skill's `name` and `description` are loaded into the system prompt for every conversation, regardless of relevance — this is how Claude chooses the right Skill out of potentially dozens or hundreds available. The body of `SKILL.md` only gets read if the description already convinced Claude to look. A vague description means a Skill that silently never triggers, no matter how good its instructions are.
+
+<Callout type="info">
+  This doc covers **writing and iterating on the `description` field** specifically. For the rest of the required frontmatter and file layout, see [Skill Structure & Frontmatter](./skill-structure-and-frontmatter).
+</Callout>
+
+## Core concepts
+
+- **Always write in third person** — the description is injected directly into the system prompt, and inconsistent point-of-view causes discovery problems. "Processes Excel files and generates reports," not "I can help you process Excel files" or "You can use this to process Excel files."
+- **A good description has two parts, both required**: what the Skill does, and when to use it. Missing either half is the most common failure mode — a description that's purely functional ("Creates sophisticated multi-page documentation systems") gives Claude no trigger conditions to match against.
+- **Include specific trigger phrases and key terms** — the words a user would actually say. "Use when the user asks for 'sprint planning', 'Linear tasks', or 'create tickets'" is far more useful than "use for project management."
+- **Mention relevant file types or formats explicitly** when applicable — `.fig` files, `.xlsx`, CSV — since these are concrete, matchable signals.
+- **Specificity beats breadth** — "Analyzes Figma design files and generates developer handoff documentation" triggers more reliably than "Helps with design work," even though the broader phrasing seems like it should catch more cases. Vague descriptions actually catch *fewer* relevant cases because they give the matching process less to work with.
+- **Negative triggers narrow an over-broad Skill** — "Use for statistical modeling, regression, clustering. Do NOT use for simple data exploration (use data-viz skill instead)" prevents a Skill from firing on adjacent-but-wrong tasks.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Structure the description as what + when
+
+- **Action**: Write to the formula `[what it does] + [when to use it] + [key capabilities/triggers]`, filling in specifics rather than generic category words.
+  ```yaml
+  # Good — specific and actionable
+  description: Analyzes Figma design files and generates developer handoff documentation. Use when the user uploads .fig files, asks for "design specs", "component documentation", or "design-to-code handoff".
+
+  # Good — includes trigger phrases
+  description: Manages Linear project workflows including sprint planning, task creation, and status tracking. Use when the user mentions "sprint", "Linear tasks", "project planning", or asks to "create tickets".
+  ```
+- **Result**: Both examples give Claude concrete phrases to pattern-match against real user requests, not just an abstract category to reason about.
+
+</Step>
+<Step>
+
+#### Compare against known-bad patterns before finalizing
+
+- **Action**: Check the draft against the three most common failure shapes.
+  ```yaml
+  # Too vague — no specifics at all
+  description: Helps with projects.
+
+  # Missing triggers — describes function, not when to fire
+  description: Creates sophisticated multi-page documentation systems.
+
+  # Too technical, no user-facing triggers
+  description: Implements the Project entity model with hierarchical relationships.
+  ```
+- **Result**: Each of these would need a rewrite before shipping — none gives Claude a usable signal for when a real user's phrasing should trigger the Skill.
+
+</Step>
+<Step>
+
+#### Debug triggering with a direct question
+
+- **Action**: Ask Claude directly, in a session with the Skill loaded: "When would you use the [skill name] skill?"
+- **Result**: Claude quotes the description back in its own words, revealing exactly what it understood as the trigger conditions — if that summary is missing an important use case, the description needs more detail there, not a longer explanation elsewhere in the Skill.
+
+</Step>
+<Step>
+
+#### Iterate based on triggering signal, not guesswork
+
+- **Action**: Classify the observed problem and apply the matching fix.
+  ```
+  Under-triggering (doesn't load when it should):
+    → Add more detail and nuance to the description, including keywords
+      for technical terms a user might actually type.
+
+  Over-triggering (loads for unrelated queries):
+    → Add negative triggers ("Do NOT use for...") and narrow the scope
+      of the description to what the Skill actually handles well.
+  ```
+- **Result**: The fix targets the actual failure mode instead of a blanket rewrite — under-triggering and over-triggering pull the description in opposite directions, so diagnosing which one occurred first matters.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **First-person or second-person phrasing** ("I can help with...", "You can use this to...") — always third person.
+  - **Only describing function, never trigger conditions** — a technically accurate description with no "use when" clause still fails to fire reliably.
+  - **Generic category words standing in for specifics** ("documents", "data", "files", "helps with X") — these are exactly the vague patterns Claude has the hardest time matching against real requests.
+  - **Guessing at a fix instead of diagnosing under- vs. over-triggering first** — the two failure modes need opposite interventions; applying the wrong one makes the other worse.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Skill Structure & Frontmatter](./skill-structure-and-frontmatter)
+- [Testing & Iteration](./testing-and-iteration)

@@ -1,0 +1,118 @@
+---
+title: Distribution & Sharing
+description: Packaging, hosting, and deploying a Skill — from a single zip upload to org-wide deployment and the Skills API — and how to position its value once it's ready to share.
+---
+
+A tested Skill still needs a path to the people or systems that'll actually use it. That path looks different depending on scale: an individual uploading a zip file, an admin deploying workspace-wide, or an application calling the Skills API programmatically. Getting distribution right also means explaining the Skill's value in terms people act on, not just describing its mechanics.
+
+<Callout type="info">
+  This doc covers **packaging, hosting, and positioning** a finished Skill. It assumes the Skill has already been tested per [Testing & Iteration](./testing-and-iteration).
+</Callout>
+
+## Core concepts
+
+- **Individual distribution is a folder-to-zip-to-upload flow** — download or clone the skill folder, zip it if needed, and upload via Claude.ai (Settings > Capabilities > Skills) or place it in the Claude Code skills directory.
+- **Organizations can deploy Skills workspace-wide** — admins push a Skill to every user in an org, with automatic updates and centralized management, rather than relying on each person to install it individually.
+- **Agent Skills is a published open standard** — like MCP, a correctly structured Skill is meant to be portable across tools and platforms, not locked to one vendor's runtime. A Skill that specifically leans on one platform's capabilities should note that in its `compatibility` field (see [Skill Structure & Frontmatter](./skill-structure-and-frontmatter)) rather than silently failing elsewhere.
+- **The Skills API is the programmatic surface** — `/v1/skills` for listing and managing Skills, the `container.skills` parameter on Messages API requests to attach them, and full integration with the Agent SDK for building custom agents. This requires the code execution tool, which provides the sandboxed environment Skills run in.
+- **Pick the surface that matches the use case, not the most powerful one available**:
+
+  | Use case | Best surface |
+  |---|---|
+  | End users interacting with Skills directly | Claude.ai / Claude Code |
+  | Manual testing and iteration during development | Claude.ai / Claude Code |
+  | Individual, ad-hoc workflows | Claude.ai / Claude Code |
+  | Applications using Skills programmatically | API |
+  | Production deployments at scale | API |
+  | Automated pipelines and agent systems | API |
+
+- **A Skill built on top of an MCP server strengthens that integration, not just the Skill itself** — a connector without any accompanying Skill leaves users reconstructing the same workflow guidance in every conversation; the Skill is what turns raw tool access into a consistent, reliable outcome. See [MCP](../mcp/overview) for the connectivity layer a Skill like this sits on top of.
+- **Positioning should describe outcomes, not implementation** — "The ProjectHub skill enables teams to set up complete project workspaces in seconds, instead of 30 minutes of manual setup" communicates value; "a folder containing YAML frontmatter and Markdown instructions that calls our MCP server tools" describes mechanics nobody outside the team building it cares about.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Host the Skill with a proper repo-level README
+
+- **Action**: Publish the skill folder in a public GitHub repo, with a clear repo-level `README.md` — separate from the skill folder itself, which per [Skill Structure & Frontmatter](./skill-structure-and-frontmatter) should never contain its own `README.md`.
+  ```
+  your-skill-repo/
+  ├── README.md              ← for human visitors, not part of the skill
+  └── your-skill-name/
+      ├── SKILL.md
+      ├── scripts/
+      └── references/
+  ```
+- **Result**: Someone browsing the repo on GitHub gets installation instructions and context; Claude loading the skill folder itself never encounters a stray `README.md` competing with `SKILL.md` for attention.
+
+</Step>
+<Step>
+
+#### Write an installation guide
+
+- **Action**: Give exact, copyable steps.
+  ```markdown
+  # Installing the [Your Service] skill
+
+  1. Download the skill:
+     - Clone repo: `git clone https://github.com/yourcompany/skills`
+     - Or download the ZIP from Releases
+  2. Install in Claude:
+     - Open Claude.ai > Settings > Skills
+     - Click "Upload skill"
+     - Select the skill folder (zipped)
+  3. Enable the skill:
+     - Toggle on the [Your Service] skill
+     - Ensure the related MCP server (if any) is connected
+  4. Test:
+     - Ask Claude: "Set up a new project in [Your Service]"
+  ```
+- **Result**: A new user can go from repo to working Skill without needing to infer any step, including the easy-to-miss dependency on a connected MCP server if the Skill orchestrates one.
+
+</Step>
+<Step>
+
+#### Cross-link from MCP documentation if the Skill sits on top of a server
+
+- **Action**: Add a section to the MCP server's own docs pointing at the Skill, explaining why using both together is valuable.
+  ```markdown
+  Our MCP server gives Claude access to your Linear projects.
+  Our skill teaches Claude your team's sprint planning workflow.
+  Together, they enable AI-powered project management.
+  ```
+- **Result**: Users evaluating the MCP connector discover the Skill as part of the same decision, instead of the two being documented as unrelated, easy-to-miss add-ons.
+
+</Step>
+<Step>
+
+#### Use the API surface for programmatic or production use
+
+- **Action**: For an application or agent system consuming the Skill rather than a human clicking through Claude.ai, attach it via the Messages API.
+  ```python
+  response = client.messages.create(
+      model="claude-sonnet-5",
+      container={"skills": ["your-skill-name"]},
+      messages=[{"role": "user", "content": "Set up a new project in ProjectHub"}],
+  )
+  ```
+- **Result**: The same tested Skill now runs inside an automated pipeline or custom agent, without a human ever manually enabling it through a settings screen.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **A `README.md` inside the skill folder** — keep it at the repo root only; the skill folder itself stays README-free per [Skill Structure & Frontmatter](./skill-structure-and-frontmatter).
+  - **Positioning that describes mechanics instead of outcomes** — "a folder of YAML and Markdown" doesn't communicate why anyone should install it; lead with the time or effort it saves.
+  - **Documenting the MCP server and the Skill as unrelated things** — if a Skill exists specifically to make an MCP server more usable, say so explicitly in both places.
+  - **Reaching for the API when Claude.ai/Code would do** — the API requires the code execution tool and adds real integration overhead; use it for programmatic/production cases, not because it seems more "official" for ad-hoc use.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Testing & Iteration](./testing-and-iteration)
+- [MCP](../mcp/overview)
