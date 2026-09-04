@@ -3,7 +3,7 @@ title: Human-in-the-Loop Approval Workflows
 description: How to pause agent execution for human review before a sensitive tool call runs, including the checkpointer prerequisite and the four decision types.
 ---
 
-Per [LangChain's human-in-the-loop docs](https://docs.langchain.com/oss/python/langchain/human-in-the-loop): when a model proposes an action that might require review — writing to a file, executing SQL — middleware can pause execution and wait for a decision, checking each tool call against a configurable policy. This is a control layer that sits on top of any of the agent patterns already in this series, not a replacement for them — a [ReAct Agent](./react-agent) or [Supervisor](./supervisor) topology can both be wrapped with an approval gate on their sensitive tools.
+Per [LangChain's human-in-the-loop docs](https://docs.langchain.com/oss/python/langchain/human-in-the-loop): when a model proposes an action that might require review — writing to a file, executing SQL — middleware can pause execution and wait for a decision, checking each tool call against a configurable policy. This is a control layer that sits on top of any of the agent patterns already in this series, not a replacement for them — a [ReAct Agent](./patterns/react-agent) or [Supervisor](./patterns/supervisor) topology can both be wrapped with an approval gate on their sensitive tools.
 
 <Callout type="warn">
   **Non-negotiable prerequisite: HITL requires a checkpointer.** Human review doesn't happen instantaneously — the agent's state has to be persisted across the pause. Without a checkpointer configured, state is lost during the delay between the interrupt firing and the human's decision arriving. Confirm this is wired up before anything else below.
@@ -70,7 +70,7 @@ Per a practical field guide on running this in production, three metrics tell yo
 - **How long the approval step takes** — this is the direct cost side of the tradeoff; a policy that's slow with a low rejection rate is likely gating the wrong tools.
 
 <Callout type="info">
-  **Cross-provider note.** HITL-as-a-named-middleware is currently more mature on the LangChain/LangGraph side than as a standardized primitive elsewhere. The OpenAI Agents SDK's guardrails (see [Swarm / Handoffs](./swarm-handoffs)) are a related but distinct concept — automated input/output policy checks, not human-approval pauses. This is a real, current asymmetry across frameworks, similar to the tooling gap already noted in [Network / Mesh](./network-mesh) — not an oversight on either side.
+  **Cross-provider note.** HITL-as-a-named-middleware is currently more mature on the LangChain/LangGraph side than as a standardized primitive elsewhere. The OpenAI Agents SDK's guardrails (see [Swarm / Handoffs](./patterns/swarm-handoffs)) are a related but distinct concept — automated input/output policy checks, not human-approval pauses. This is a real, current asymmetry across frameworks, similar to the tooling gap already noted in [Network / Mesh](./patterns/network-mesh) — not an oversight on either side.
 </Callout>
 
 <Callout type="warn">
