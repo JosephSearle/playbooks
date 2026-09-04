@@ -1,0 +1,95 @@
+---
+title: Connecting to Servers
+description: Wiring local (stdio) and remote (Streamable HTTP) MCP servers into a host application, and managing the resulting connection lifecycle.
+---
+
+Once a server exists — whether one you built (see [Build a Server](./build-server)) or a third-party server someone else published — the remaining work is operational: telling a host application how to find it, launch or connect to it, and keep that connection healthy. Local and remote servers differ enough in this regard that they're worth treating as genuinely different operational patterns, not just a config flag.
+
+<Callout type="info">
+  This doc covers **connecting an existing server to a host**, not writing client or server code — see [Build a Client](./build-client) if you're implementing the connecting side yourself. It assumes the local-vs-remote distinction from [Architecture](./architecture).
+</Callout>
+
+## Core concepts
+
+- **Local (stdio) servers are launched as a subprocess of the host** — the host starts the server process directly and communicates over its stdin/stdout. There's no network exposure and no separate authentication step; the OS process boundary is effectively the trust boundary. This is the default choice for a server that only needs to run on the same machine as the host (local filesystem access, local tooling).
+- **Remote (Streamable HTTP) servers run independently and are reached over the network** — the host connects as a client to an already-running service, potentially shared across many users and hosts simultaneously. This is the right choice for anything that needs to be centrally operated, shared across a team, or that wraps a remote system anyway (a SaaS API, an internal service).
+- **Configuration is host-specific but conceptually the same** — every MCP-compatible host (Claude Code, Claude Desktop, VS Code, and others) exposes some form of server registry: a name, a launch command and args for stdio servers, or a URL and auth details for remote servers. Learning the concept transfers even though the exact config file format doesn't.
+- **Connection lifecycle matters more for remote servers** — a local stdio server's lifecycle is tied to the host process; a remote server connection can drop, need reconnection, or require credential refresh independently of the host's own lifecycle, and a host needs to handle that gracefully rather than treating the connection as fire-and-forget.
+- **One host can hold many simultaneous server connections** — there's no architectural limit forcing a choice between servers; a host commonly connects to several local and several remote servers at once, each as its own client instance (see [Build a Client](./build-client)).
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Register a local stdio server
+
+- **Action**: Point the host at a launch command for the server process.
+  ```json
+  {
+    "mcpServers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"]
+      }
+    }
+  }
+  ```
+- **Result**: The host launches this process on startup (or on first use, depending on the host) and communicates over stdio — no network configuration, no credentials, scoped to whatever the server's own args restrict it to (here, one directory).
+
+</Step>
+<Step>
+
+#### Register a remote Streamable HTTP server
+
+- **Action**: Point the host at a URL and the auth needed to reach it (see [Authorization & Security](./authorization-and-security) for the OAuth flow itself).
+  ```json
+  {
+    "mcpServers": {
+      "internal-issue-tracker": {
+        "url": "https://mcp.internal.example.com/",
+        "headers": {
+          "Authorization": "Bearer ${ISSUE_TRACKER_MCP_TOKEN}"
+        }
+      }
+    }
+  }
+  ```
+  - **Result**: The host connects over HTTP, using the bearer token for authentication; multiple users' hosts can point at the same URL and be served by the same running service, unlike a local stdio server which each user launches independently.
+
+</Step>
+<Step>
+
+#### Scope what a local server can actually touch
+
+- **Action**: Restrict a local server's effective reach through its own configuration rather than trusting it implicitly just because it's local.
+  ```json
+  {
+    "mcpServers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects/current-repo"]
+      }
+    }
+  }
+  ```
+- **Result**: Even though the process runs with the host user's OS permissions, the server's own argument scoping keeps it from touching unrelated parts of the filesystem — treat this the same as you would least-privilege scoping for any credential.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Trusting a local server implicitly because it's local** — "runs on the same machine" is not the same as "safe to grant broad filesystem/network access"; scope it deliberately.
+  - **Hardcoding credentials directly in host config instead of an environment variable reference** — leaks secrets into a config file that's often checked into dotfiles repos or shared between machines.
+  - **No reconnection handling for remote servers** — a dropped connection to a remote server shouldn't silently disable that server's tools for the rest of the session without at least a visible error to the user.
+  - **Connecting to an unfamiliar remote server without reviewing what it exposes** — a remote server is a third party you're granting tool-execution trust to; review its tool list and permissions model the same way you'd review a new dependency.
+</Callout>
+
+## References
+
+- [Model Context Protocol — Connect to Local MCP Servers](https://modelcontextprotocol.io/docs/2026-07-28/develop/connect-local-servers)
+- [Model Context Protocol — Connect to Remote MCP Servers](https://modelcontextprotocol.io/docs/2026-07-28/develop/connect-remote-servers)
+- [Architecture](./architecture)
+- [Build a Server](./build-server)
+- [Authorization & Security](./authorization-and-security)

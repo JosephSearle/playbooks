@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" role="img" aria-label="MCP architecture: an MCP Host application (e.g. an AI assistant) contains three MCP Clients, each maintaining a dedicated connection to one MCP Server — Client 1 to a local Filesystem server over stdio, Client 2 to a local Database server over stdio, and Client 3 to a remote Sentry server over Streamable HTTP">
+  <title>MCP Architecture</title>
+  <style>
+    :root{
+      --diagram-bg:#0A0A0A;
+      --node-fill:#111111;
+      --node-stroke:rgba(255,255,255,0.10);
+      --host-fill:#0d0d0d;
+      --host-stroke:rgba(255,255,255,0.14);
+      --hub-fill:#181818;
+      --hub-stroke:rgba(3,104,255,0.55);
+      --edge-color:#5b616c;
+      --accent-color:#0368FF;
+      --local-color:#2FBF71;
+      --remote-color:#FF7A59;
+      --text-color:#f4f4f5;
+      --muted-text:#8b909b;
+    }
+    .arch-title{font:700 26px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+    .arch-sub{font:500 12px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--muted-text);letter-spacing:.12em;}
+    .arch-label{font:600 13px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--text-color);}
+    .arch-label2{font:600 12px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--text-color);}
+    .arch-hostlabel{font:700 13.5px system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--muted-text);letter-spacing:.04em;}
+    .arch-tag{font:600 10.5px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;fill:var(--muted-text);letter-spacing:.02em;}
+    .arch-nodebox{fill:var(--node-fill);stroke:var(--node-stroke);stroke-width:1;}
+    .arch-hostbox{fill:var(--host-fill);stroke:var(--host-stroke);stroke-width:1.25;stroke-dasharray:4 4;}
+    .arch-edge{stroke:var(--edge-color);stroke-width:1.5;fill:none;}
+    .arch-flow{fill:none;stroke-width:2;stroke-dasharray:5 11;stroke-linecap:round;opacity:.6;stroke:var(--accent-color);animation:arch-dash .9s linear infinite;}
+    @keyframes arch-dash{to{stroke-dashoffset:-16;}}
+
+    .arch-packet{opacity:0;animation:arch-p1 9s ease-in-out infinite;}
+    @keyframes arch-p1{
+      0%{transform:translate(0,0);opacity:0}
+      3%{transform:translate(0,0);opacity:1}
+      30%{transform:translate(224px,0);opacity:1}
+      34%{transform:translate(224px,0);opacity:0}
+      100%{transform:translate(224px,0);opacity:0}
+    }
+    .arch-packet2{opacity:0;animation:arch-p2 9s ease-in-out infinite;animation-delay:3s;}
+    @keyframes arch-p2{
+      0%{transform:translate(0,0);opacity:0}
+      3%{transform:translate(0,0);opacity:1}
+      30%{transform:translate(224px,0);opacity:1}
+      34%{transform:translate(224px,0);opacity:0}
+      100%{transform:translate(224px,0);opacity:0}
+    }
+    .arch-packet3{opacity:0;animation:arch-p3 9s ease-in-out infinite;animation-delay:6s;}
+    @keyframes arch-p3{
+      0%{transform:translate(0,0);opacity:0}
+      3%{transform:translate(0,0);opacity:1}
+      30%{transform:translate(224px,0);opacity:1}
+      34%{transform:translate(224px,0);opacity:0}
+      100%{transform:translate(224px,0);opacity:0}
+    }
+
+    .arch-pulse{transform-box:fill-box;transform-origin:center;animation:arch-pulse 1.4s ease-out infinite;}
+    @keyframes arch-pulse{0%{opacity:.6;transform:scale(.6)}70%{opacity:0;transform:scale(2.2)}100%{opacity:0;transform:scale(2.2)}}
+
+    @media (prefers-reduced-motion: reduce){
+      .arch-flow,.arch-packet,.arch-packet2,.arch-packet3,.arch-pulse{animation:none !important;}
+      .arch-packet,.arch-packet2,.arch-packet3{opacity:1;}
+      .arch-pulse{opacity:0;}
+    }
+  </style>
+  <defs>
+    <linearGradient id="arch-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0368FF"/><stop offset="30%" stop-color="#8D30FF"/><stop offset="55%" stop-color="#FF4FBA"/><stop offset="78%" stop-color="#FF2B6E"/><stop offset="100%" stop-color="#FF7A59"/>
+    </linearGradient>
+    <marker id="arch-am" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="7" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="var(--edge-color)"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="480" fill="var(--diagram-bg)"/>
+
+  <text class="arch-sub" x="40" y="52">MODEL CONTEXT PROTOCOL</text>
+  <text class="arch-title" x="40" y="84" fill="url(#arch-grad)">Architecture</text>
+
+  <!-- MCP Host container -->
+  <rect class="arch-hostbox" x="40" y="120" width="300" height="330" rx="16"/>
+  <text class="arch-hostlabel" x="60" y="146">MCP HOST (AI APPLICATION)</text>
+
+  <!-- Clients inside host -->
+  <rect class="arch-nodebox" x="64" y="164" width="252" height="56" rx="11"/>
+  <text class="arch-label2" x="190" y="192" text-anchor="middle" dominant-baseline="middle">MCP Client 1</text>
+
+  <rect class="arch-nodebox" x="64" y="266" width="252" height="56" rx="11"/>
+  <text class="arch-label2" x="190" y="294" text-anchor="middle" dominant-baseline="middle">MCP Client 2</text>
+
+  <rect class="arch-nodebox" x="64" y="368" width="252" height="56" rx="11"/>
+  <text class="arch-label2" x="190" y="396" text-anchor="middle" dominant-baseline="middle">MCP Client 3</text>
+
+  <!-- Edges: client -> server, dedicated connections -->
+  <line class="arch-edge" x1="316" y1="192" x2="540" y2="192" marker-end="url(#arch-am)"/>
+  <line class="arch-edge" x1="316" y1="294" x2="540" y2="294" marker-end="url(#arch-am)"/>
+  <line class="arch-edge" x1="316" y1="396" x2="540" y2="396" marker-end="url(#arch-am)"/>
+
+  <line class="arch-flow" x1="316" y1="192" x2="538" y2="192"/>
+  <line class="arch-flow" x1="316" y1="294" x2="538" y2="294"/>
+  <line class="arch-flow" x1="316" y1="396" x2="538" y2="396"/>
+
+  <text class="arch-tag" x="428" y="180" text-anchor="middle">stdio</text>
+  <text class="arch-tag" x="428" y="282" text-anchor="middle">stdio</text>
+  <text class="arch-tag" x="428" y="384" text-anchor="middle" fill="var(--remote-color)">streamable http</text>
+
+  <!-- Servers -->
+  <rect class="arch-nodebox" x="542" y="158" width="318" height="68" rx="12" stroke="var(--local-color)" stroke-opacity="0.55"/>
+  <text class="arch-label" x="562" y="184">MCP Server A</text>
+  <text class="arch-tag" x="562" y="204" fill="var(--local-color)">LOCAL · FILESYSTEM</text>
+
+  <rect class="arch-nodebox" x="542" y="260" width="318" height="68" rx="12" stroke="var(--local-color)" stroke-opacity="0.55"/>
+  <text class="arch-label" x="562" y="286">MCP Server B</text>
+  <text class="arch-tag" x="562" y="306" fill="var(--local-color)">LOCAL · DATABASE</text>
+
+  <rect class="arch-hubbox arch-nodebox" x="542" y="362" width="318" height="68" rx="12" fill="var(--hub-fill)" stroke="var(--remote-color)" stroke-opacity="0.65"/>
+  <text class="arch-label" x="562" y="388">MCP Server C</text>
+  <text class="arch-tag" x="562" y="408" fill="var(--remote-color)">REMOTE · SENTRY</text>
+
+  <!-- annotation: remote servers typically serve many clients -->
+  <path class="arch-edge" d="M876,396 C900,396 900,470 830,470 L490,470" fill="none" opacity="0.4"/>
+  <text class="arch-tag" x="660" y="465" text-anchor="middle" fill="var(--muted-text)">remote servers typically serve many clients at once</text>
+
+  <!-- Traveling packets, one per client-server pair -->
+  <g class="arch-packet" style="transform:translate(0,0)">
+    <circle class="arch-pulse" cx="316" cy="192" r="9" fill="none" stroke="var(--accent-color)" stroke-width="2"/>
+    <circle cx="316" cy="192" r="11" fill="var(--accent-color)" opacity="0.22"/>
+    <circle cx="316" cy="192" r="5.5" fill="var(--accent-color)"/>
+    <circle cx="314" cy="190" r="2" fill="#fff" opacity="0.85"/>
+  </g>
+  <g class="arch-packet2" style="transform:translate(0,0)">
+    <circle class="arch-pulse" cx="316" cy="294" r="9" fill="none" stroke="var(--accent-color)" stroke-width="2"/>
+    <circle cx="316" cy="294" r="11" fill="var(--accent-color)" opacity="0.22"/>
+    <circle cx="316" cy="294" r="5.5" fill="var(--accent-color)"/>
+    <circle cx="314" cy="292" r="2" fill="#fff" opacity="0.85"/>
+  </g>
+  <g class="arch-packet3" style="transform:translate(0,0)">
+    <circle class="arch-pulse" cx="316" cy="396" r="9" fill="none" stroke="var(--remote-color)" stroke-width="2"/>
+    <circle cx="316" cy="396" r="11" fill="var(--remote-color)" opacity="0.22"/>
+    <circle cx="316" cy="396" r="5.5" fill="var(--remote-color)"/>
+    <circle cx="314" cy="394" r="2" fill="#fff" opacity="0.85"/>
+  </g>
+</svg>

@@ -1,0 +1,121 @@
+---
+title: Function & Model Inference
+description: Server-side embedding functions and reranking — generating vectors inside the database and fusing multi-signal search results.
+---
+
+Two related capabilities sit at the edge between "database" and "ML pipeline": functions that generate vectors (or lexical representations like BM25) server-side instead of in your application code, and rerankers that combine or re-score results after initial retrieval. Both reduce the amount of ML infrastructure your application has to own directly.
+
+<Callout type="info">
+  This doc covers **embedding functions** (server-side vector generation) and **reranking** (fusing and re-scoring results). It assumes you already know why you'd search in the first place — see [Search & Filtering](./search-tuning) — and how the resulting vectors are stored — see [Schemas](./schemas).
+</Callout>
+
+## Core concepts
+
+- **Server-side functions move embedding generation into the write/query path** — instead of your application calling an embedding model, converting the output to a vector, and sending it in the insert/search call, the database does it given raw text. This removes a class of bugs where the embedding model used at write time silently drifts from the one used at query time (see [Schemas](./schemas)'s note on this), because there's only one place the model is invoked.
+- **BM25 as a function generates sparse vectors from text automatically** — you insert raw text into a designated field, and the sparse-vector field ([Schemas](./schemas)) is populated for you, keeping hybrid search's lexical half in sync with the corpus without a separate pipeline.
+- **Model-hosted embedding functions call an external provider from inside the database** — OpenAI, Hugging Face TEI, or a self-hosted embedding server can be registered as a function, so dense vectors are generated the same way, whether the caller is a batch ingestion job or an ad hoc query.
+- **Rerankers operate after initial retrieval, not instead of it** — retrieval (dense/sparse/hybrid search) produces a candidate set; a reranker reorders or fuses that set using a different, often more expensive, signal. Rerank on a bounded candidate set (tens to low hundreds), never on the full collection.
+- **Fusion rankers combine multiple retrieval result sets** — RRF (Reciprocal Rank Fusion) needs no score calibration between sources and is a solid default for hybrid search; weighted and boost rankers give explicit control when you know one signal should dominate.
+- **Decay rankers bias results by recency or another continuous field** — gaussian/exponential/linear decay reduce a candidate's score as it ages, useful for time-sensitive corpora (news, logs, changelogs) where relevance and recency are both signals.
+- **Model rerankers (cross-encoders) trade latency for precision** — a hosted reranking model (Cohere, Voyage AI, a self-hosted cross-encoder via vLLM/TEI) scores each query-candidate pair directly, which is far more accurate than fusion alone but too expensive to run on anything but a small candidate set.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Generate sparse vectors with a BM25 function instead of a manual pipeline
+
+- **Action**: Register a BM25 function on a text field so the sparse vector field is populated automatically at insert time.
+  ```python
+  from pymilvus import Function, FunctionType
+
+  bm25_function = Function(
+      name="text_bm25",
+      function_type=FunctionType.BM25,
+      input_field_names=["text"],
+      output_field_names=["sparse_embedding"],
+  )
+  schema.add_function(bm25_function)
+  # client.insert(..., data=[{"text": "...", "dense_embedding": [...], ...}])  # sparse_embedding is derived automatically
+  ```
+- **Result**: Every insert that includes `text` gets a consistent, up-to-date BM25 representation with no separate tokenization step to keep in sync with the corpus.
+
+</Step>
+<Step>
+
+#### Fuse hybrid search results with a fusion ranker
+
+- **Action**: Use RRF as the default fusion strategy for combining dense and sparse result sets from [Search & Filtering](./search-tuning), and switch to a weighted ranker when one signal should dominate.
+  ```python
+  from pymilvus import RRFRanker, WeightedRanker
+
+  # No score calibration needed between dense and sparse — safe default
+  ranker = RRFRanker(k=60)
+
+  # Explicit control: trust dense similarity more than lexical match
+  ranker = WeightedRanker(0.7, 0.3)
+  ```
+- **Result**: RRF works well without tuning because it only uses rank order, not raw scores, which differ in scale between dense and sparse. Reach for `WeightedRanker` only once you've measured that fixed weighting outperforms RRF on your query set.
+
+</Step>
+<Step>
+
+#### Add a model reranker for the top-N candidates
+
+- **Action**: Retrieve a bounded candidate set with hybrid search, then re-score with a cross-encoder reranker.
+  ```python
+  candidates = client.hybrid_search(
+      collection_name="documents", reqs=[dense_req, sparse_req], ranker=RRFRanker(k=60), limit=50,
+  )
+
+  import cohere
+  co = cohere.Client(api_key="...")
+  reranked = co.rerank(
+      query=user_query,
+      documents=[c["text"] for c in candidates[0]],
+      top_n=10,
+      model="rerank-english-v3.0",
+  )
+  ```
+- **Result**: The final 10 results reflect a query-aware relevance judgment, not just retrieval-stage similarity — typically the largest single quality improvement available after retrieval is already working, at the cost of one extra network call on a small (50-candidate) batch.
+
+</Step>
+<Step>
+
+#### Apply a decay ranker for recency-sensitive corpora
+
+- **Action**: Bias scores by an age field when recency matters (e.g., news, tickets, changelog entries).
+  ```python
+  from pymilvus import Function, FunctionType
+
+  decay_ranker = Function(
+      name="recency_decay",
+      function_type=FunctionType.RERANK,
+      input_field_names=["created_at"],
+      params={"reranker": "decay", "function": "exp", "origin": "now", "scale": 86400 * 7, "decay": 0.5},
+  )
+  ```
+- **Result**: A document from last week outranks an otherwise-similar document from last year without recency becoming the only signal — decay softens rather than hard-filters by age, unlike a `created_at >` cutoff in the filter expression.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Reranking the full result set instead of a bounded candidate set** — model rerankers cost roughly linear time per candidate; run them on tens to a couple hundred candidates, never thousands.
+  - **Mixing embedding functions and manual embedding calls for the same field** — pick one generation path per vector field; mixing them reintroduces the write/query drift that server-side functions exist to prevent.
+  - **Defaulting to a weighted ranker without measuring against RRF first** — weighted fusion needs tuned, query-set-specific weights or it silently underperforms RRF's parameter-free default.
+  - **Using a hard recency filter when a decay ranker would do** — a hard cutoff (`created_at > X`) can exclude an otherwise-perfect older match; decay demotes rather than excludes.
+</Callout>
+
+## References
+
+- [Milvus — BM25 Function](https://milvus.io/docs/bm25-function.md)
+- [Milvus — Embedding Function Overview](https://milvus.io/docs/embedding-function-overview.md)
+- [Milvus — RRF Ranker](https://milvus.io/docs/rrf-ranker.md)
+- [Milvus — Weighted Ranker](https://milvus.io/docs/weighted-ranker.md)
+- [Milvus — Decay Ranker Overview](https://milvus.io/docs/decay-ranker-overview.md)
+- [Milvus — Model Ranker Overview](https://milvus.io/docs/model-ranker-overview.md)
+- [Schemas](./schemas)
+- [Search & Filtering](./search-tuning)

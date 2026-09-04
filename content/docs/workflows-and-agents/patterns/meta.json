@@ -1,0 +1,4 @@
+{
+  "title": "Patterns",
+  "pages": ["adoption-strategy", "prompt-chaining", "routing", "parallelization", "orchestrator-workers", "evaluator-optimizer", "react-agent", "supervisor", "swarm-handoffs", "map-reduce", "network-mesh"]
+}

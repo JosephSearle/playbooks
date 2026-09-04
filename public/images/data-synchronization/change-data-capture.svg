@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 370" role="img" aria-label="Change Data Capture pipeline: a Source Database's write-ahead log is read by a CDC Log Reader, which publishes change events to an Event Stream, consumed by a Sync Consumer that upserts into the Vector Store">
+  <title>Change Data Capture</title>
+  <style>
+    :root {
+      --diagram-bg: #0A0A0A;
+      --node-fill: #141414;
+      --node-stroke: rgba(255,255,255,0.12);
+      --edge-color: #6b7280;
+      --accent-color: #0368FF;
+      --text-color: #f4f4f5;
+      --muted-text: #9ca3af;
+    }
+    .cdc-title  { font: 700 26px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .cdc-sub    { font: 500 12px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--muted-text); letter-spacing: .12em; }
+    .cdc-label  { font: 600 13px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--text-color); }
+    .cdc-label2 { font: 600 12px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--text-color); }
+    .cdc-tag    { font: 600 10.5px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted-text); letter-spacing: .02em; }
+    .cdc-nodebox { fill: var(--node-fill); stroke: var(--node-stroke); stroke-width: 1; }
+    .cdc-edge    { stroke: var(--edge-color); stroke-width: 1.5; fill: none; }
+
+    .cdc-flow {
+      stroke: var(--accent-color); stroke-width: 2; fill: none;
+      stroke-dasharray: 5 11; stroke-linecap: round; opacity: .85;
+      animation: cdc-dash .9s linear infinite;
+    }
+    @keyframes cdc-dash { to { stroke-dashoffset: -16; } }
+
+    .cdc-packet {
+      opacity: 1;
+      animation: cdc-travel 4.5s ease-in-out infinite;
+    }
+    @keyframes cdc-travel {
+      0%   { transform: translateX(0);      opacity: 0; }
+      4%   { transform: translateX(0);      opacity: 1; }
+      8%   { transform: translateX(0); }
+      22%  { transform: translateX(170px); }
+      26%  { transform: translateX(170px); }
+      40%  { transform: translateX(340px); }
+      44%  { transform: translateX(340px); }
+      58%  { transform: translateX(510px); }
+      62%  { transform: translateX(510px); }
+      76%  { transform: translateX(680px); }
+      82%  { transform: translateX(680px); opacity: 1; }
+      92%  { transform: translateX(680px); opacity: 0; }
+      100% { transform: translateX(680px); opacity: 0; }
+    }
+
+    .cdc-pulse {
+      transform-box: fill-box; transform-origin: center;
+      animation: cdc-pulse 4.5s ease-out infinite;
+    }
+    @keyframes cdc-pulse {
+      0%{opacity:0;transform:scale(.5)}
+      4%{opacity:.8;transform:scale(.5)}   9%{opacity:0;transform:scale(2.6)}   10%{opacity:0;transform:scale(.5)}
+      22%{opacity:.8;transform:scale(.5)}  27%{opacity:0;transform:scale(2.6)}  28%{opacity:0;transform:scale(.5)}
+      40%{opacity:.8;transform:scale(.5)}  45%{opacity:0;transform:scale(2.6)}  46%{opacity:0;transform:scale(.5)}
+      58%{opacity:.8;transform:scale(.5)}  63%{opacity:0;transform:scale(2.6)}  64%{opacity:0;transform:scale(.5)}
+      76%{opacity:.8;transform:scale(.5)}  81%{opacity:0;transform:scale(2.6)}  100%{opacity:0;transform:scale(.5)}
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .cdc-packet, .cdc-pulse, .cdc-flow { animation: none !important; }
+      .cdc-packet { opacity: 1; }
+      .cdc-pulse  { opacity: 0; }
+    }
+  </style>
+
+  <defs>
+    <linearGradient id="cdc-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#0368FF"/>
+      <stop offset="30%" stop-color="#8D30FF"/>
+      <stop offset="55%" stop-color="#FF4FBA"/>
+      <stop offset="78%" stop-color="#FF2B6E"/>
+      <stop offset="100%" stop-color="#FF7A59"/>
+    </linearGradient>
+    <marker id="cdc-arrow" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 Z" fill="var(--edge-color)"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="370" fill="var(--diagram-bg)"/>
+
+  <text class="cdc-sub"   x="40" y="52">EVENT-DRIVEN SYNC</text>
+  <text class="cdc-title" x="40" y="84" fill="url(#cdc-grad)">Change Data Capture</text>
+
+  <line class="cdc-edge" x1="170" y1="210" x2="206" y2="210" marker-end="url(#cdc-arrow)"/>
+  <line class="cdc-edge" x1="340" y1="210" x2="376" y2="210" marker-end="url(#cdc-arrow)"/>
+  <line class="cdc-edge" x1="510" y1="210" x2="546" y2="210" marker-end="url(#cdc-arrow)"/>
+  <line class="cdc-edge" x1="680" y1="210" x2="716" y2="210" marker-end="url(#cdc-arrow)"/>
+
+  <line class="cdc-flow" x1="170" y1="210" x2="205" y2="210"/>
+  <line class="cdc-flow" x1="340" y1="210" x2="375" y2="210"/>
+  <line class="cdc-flow" x1="510" y1="210" x2="545" y2="210"/>
+  <line class="cdc-flow" x1="680" y1="210" x2="715" y2="210"/>
+
+  <text class="cdc-tag" x="188" y="197" text-anchor="middle">wal / binlog</text>
+  <text class="cdc-tag" x="358" y="197" text-anchor="middle">change events</text>
+  <text class="cdc-tag" x="528" y="197" text-anchor="middle">consume</text>
+  <text class="cdc-tag" x="698" y="197" text-anchor="middle">upsert</text>
+
+  <g>
+    <rect class="cdc-nodebox" x="40"  y="178" width="130" height="64" rx="12"/>
+    <text class="cdc-label2" x="105" y="210" text-anchor="middle" dominant-baseline="middle"><tspan x="105" dy="-0.35em">Source</tspan><tspan x="105" dy="1.25em">Database</tspan></text>
+
+    <rect class="cdc-nodebox" x="210" y="178" width="130" height="64" rx="12"/>
+    <text class="cdc-label2" x="275" y="210" text-anchor="middle" dominant-baseline="middle"><tspan x="275" dy="-0.35em">CDC Log</tspan><tspan x="275" dy="1.25em">Reader</tspan></text>
+
+    <rect class="cdc-nodebox" x="380" y="178" width="130" height="64" rx="12"/>
+    <text class="cdc-label2" x="445" y="210" text-anchor="middle" dominant-baseline="middle"><tspan x="445" dy="-0.35em">Event</tspan><tspan x="445" dy="1.25em">Stream</tspan></text>
+
+    <rect class="cdc-nodebox" x="550" y="178" width="130" height="64" rx="12"/>
+    <text class="cdc-label2" x="615" y="210" text-anchor="middle" dominant-baseline="middle"><tspan x="615" dy="-0.35em">Sync</tspan><tspan x="615" dy="1.25em">Consumer</tspan></text>
+
+    <rect class="cdc-nodebox" x="720" y="178" width="130" height="64" rx="12"/>
+    <text class="cdc-label2" x="785" y="210" text-anchor="middle" dominant-baseline="middle"><tspan x="785" dy="-0.35em">Vector</tspan><tspan x="785" dy="1.25em">Store</tspan></text>
+  </g>
+
+  <g class="cdc-packet">
+    <circle class="cdc-pulse" cx="105" cy="210" r="9" fill="none" stroke="var(--accent-color)" stroke-width="2"/>
+    <circle cx="105" cy="210" r="11" fill="var(--accent-color)" opacity="0.22"/>
+    <circle cx="105" cy="210" r="5.5" fill="var(--accent-color)"/>
+    <circle cx="103" cy="208" r="2" fill="#ffffff" opacity="0.85"/>
+  </g>
+</svg>

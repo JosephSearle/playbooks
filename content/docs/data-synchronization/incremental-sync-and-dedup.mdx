@@ -1,0 +1,115 @@
+---
+title: Incremental Sync & Deduplication
+description: The record-keeping layer — content hashing, a tracking store, and deletion propagation — that makes either CDC or batch sync actually correct over time.
+---
+
+Detecting that a source changed (via [Change Data Capture](./change-data-capture) or [Batch Orchestration](./batch-orchestration)) is only half of sync. The other half — knowing whether a "changed" document actually needs re-embedding, avoiding duplicate entries across repeated runs, and removing vectors for documents that no longer exist at the source — is a record-keeping problem, and it's the half most pipelines get wrong first. This is the layer that makes either upstream pattern trustworthy rather than just fast.
+
+<Callout type="info">
+  This doc covers **the tracking and deduplication layer**, independent of whether change detection comes from [Change Data Capture](./change-data-capture) or [Batch Orchestration](./batch-orchestration) — both need this. It builds on the stable-primary-key guidance in [Schemas](../vector-management/schemas) and the upsert/delete mechanics in [Ingestion](../vector-management/ingestion).
+</Callout>
+
+## Core concepts
+
+- **A "changed" event doesn't always mean content changed** — a source row can be touched (an `updated_at` bump, an unrelated column write) without its actual synced content changing. Re-embedding on every such event wastes cost for zero benefit; content hashing distinguishes a real content change from noise.
+- **Content hashing is the cheap correctness check** — hash the actual content that gets embedded (not the whole source row) and compare against the last-known hash for that document's ID. Only re-embed and upsert when the hash differs; skip otherwise.
+- **A record manager tracks what's already synced, independent of the vector store itself** — a separate tracking store (a table, or a purpose-built component like LangChain's `RecordManager`) records each synced document's ID, content hash, and last-seen timestamp. This is what lets a sync run answer "is this new, changed, or unchanged?" without querying the vector store for every item.
+- **Cleanup mode determines how deletions are handled, and it's a real choice, not an afterthought** — LangChain's indexing API names this well with three modes worth adopting as a mental model regardless of tooling:
+  - **`incremental`** — only re-syncs and deletes documents that were previously indexed by this same run's source scope; safe for partial/scoped syncs.
+  - **`full`** — after syncing, deletes anything in the tracking store that wasn't seen in this run at all, treating the run as authoritative for the full source; correct for "this run represents the complete current state of the source" but dangerous if the fetch step silently returned partial results.
+  - **`scoped_full`** — a middle ground: authoritative for deletion only within an explicit scope (e.g., one repo, one bucket prefix), not the entire source.
+- **Deletion propagation is the part most commonly skipped entirely** — if the source document is gone, the vector should be too; a sync pipeline that only ever upserts and never deletes accumulates orphaned, stale vectors indefinitely, degrading search quality over time (a deleted document can still surface as a search result).
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Track synced documents with a content hash
+
+- **Action**: Maintain a record store keyed by stable document ID, holding a content hash and last-sync metadata.
+  ```python
+  import hashlib
+
+  def content_hash(text: str) -> str:
+      return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+  def needs_sync(doc_id: str, content: str, record_store) -> bool:
+      current_hash = content_hash(content)
+      existing = record_store.get(doc_id)
+      return existing is None or existing["hash"] != current_hash
+  ```
+- **Result**: A document touched at the source but unchanged in the field that actually gets embedded is skipped — `needs_sync` returns `False`, and no embedding call or upsert happens for it.
+
+</Step>
+<Step>
+
+#### Use a real indexing API where available, instead of hand-rolling the tracking store
+
+- **Action**: LangChain's indexing API implements this pattern directly, including cleanup modes — reach for it rather than reimplementing hashing and tracking from scratch when your stack already includes LangChain.
+  ```python
+  from langchain.indexes import index
+  from langchain.indexes import SQLRecordManager
+
+  record_manager = SQLRecordManager("docs_sync", db_url="postgresql://...")
+  record_manager.create_schema()
+
+  index(
+      docs_source,
+      record_manager,
+      vector_store,
+      cleanup="incremental",   # or "full" / "scoped_full"
+      source_id_key="source",
+  )
+  ```
+- **Result**: `index()` handles hashing, skip-if-unchanged, and cleanup-mode-appropriate deletion in one call — new/changed documents are upserted, unchanged ones are skipped, and (in `full`/`scoped_full` mode) documents no longer present are deleted from the vector store.
+
+</Step>
+<Step>
+
+#### Choose cleanup mode deliberately per sync scope
+
+- **Action**: Match the cleanup mode to what this run actually represents.
+  ```python
+  # Full source sync — this run sees everything, safe to delete anything unseen
+  index(all_docs, record_manager, vector_store, cleanup="full", source_id_key="source")
+
+  # Scoped to one repo — only delete within that repo's namespace, not globally
+  index(repo_docs, record_manager, vector_store, cleanup="scoped_full", source_id_key="source")
+  ```
+- **Result**: A partial/scoped sync run never deletes vectors outside its own scope, while a genuine full-source run correctly removes anything no longer present — avoiding both silent data loss and orphaned vectors.
+
+</Step>
+<Step>
+
+#### Handle deletion propagation explicitly when not using a built-in indexing API
+
+- **Action**: If tracking is hand-rolled, diff the current source ID set against the tracking store's recorded IDs and delete what's missing.
+  ```python
+  def propagate_deletions(current_source_ids: set[str], record_store, collection):
+      tracked_ids = record_store.all_ids()
+      deleted_ids = tracked_ids - current_source_ids
+      if deleted_ids:
+          collection.delete(ids=list(deleted_ids))
+          record_store.remove(deleted_ids)
+  ```
+- **Result**: Documents removed at the source are removed from the vector store in the same run, rather than lingering as stale, unreachable-but-still-searchable entries.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Hashing the whole source record instead of the embedded content** — causes unnecessary re-embeds when unrelated fields change; hash only what actually feeds the embedding.
+  - **Using `full` cleanup mode on a partial/scoped fetch** — deletes vectors for documents that still exist at the source but simply weren't included in this particular run's scope. Use `scoped_full` or `incremental` instead.
+  - **No deletion propagation at all** — the single most common gap; a pipeline that only ever upserts silently accumulates stale, orphaned vectors that degrade search quality over time.
+  - **Storing the tracking store's state only in memory** — a hand-rolled record manager needs to survive process restarts; use a real persistent store (a table, a key-value store), not an in-process dict.
+</Callout>
+
+## References
+
+- [LangChain — Indexing (incremental/full/scoped_full cleanup modes)](https://docs.langchain.com/v0.1/docs/modules/data_connection/indexing/)
+- [LangChain — RecordManager API reference](https://python.langchain.com/api_reference/core/indexing/langchain_core.indexing.base.RecordManager.html)
+- [Paragon — RAG Freshness: Incremental Sync & Deduplication](https://www.useparagon.com/blog/rag-freshness-incremental-sync-deduplication)
+- [Schemas](../vector-management/schemas)
+- [Ingestion](../vector-management/ingestion)

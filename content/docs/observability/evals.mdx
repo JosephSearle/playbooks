@@ -1,0 +1,162 @@
+---
+title: Evals
+description: A deep dive on evaluating LLM/GenAI application quality — run structure, built-in vs. custom judges, reusable evaluation datasets, and wiring evaluation into CI — using MLflow's GenAI evaluation framework.
+---
+
+Knowing whether an LLM application is actually good requires scoring its outputs against built-in or custom judges, over either ad-hoc data or a curated, reusable dataset — not eyeballing a handful of transcripts. We use MLflow's GenAI evaluation framework for this. [Experiments](./experiments) touches evaluation as one step in a run-logging workflow — this is the deep dive on evaluation itself: how a run is structured, built-in vs. custom judges, curated datasets, and wiring it into CI.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server. Evaluations against RETRIEVER-dependent scorers (`RetrievalGroundedness`, `RetrievalRelevance`, `RetrievalSufficiency`) additionally need code instrumented per [Tracing](./tracing) — see that doc's span type taxonomy for the full built-in scorer catalog and their requirements.
+</Callout>
+
+## Core concepts
+
+- **`mlflow.genai.evaluate(data=, predict_fn=, scorers=)`** — the central call every evaluation run makes.
+- **Three scorer types**: built-in LLM-as-judge (e.g. `Correctness()`), guideline-based (`Guidelines(name=..., guidelines=...)`), and custom function scorers via `@scorer`. For fully custom LLM-as-judge behavior beyond what a built-in judge covers, `make_judge()` builds one from an instruction template.
+- **Data sources**: a list of dicts for quick prototyping, an MLflow Evaluation Dataset for a persistent and reusable curated set, or a pandas/Spark DataFrame for bulk workflows.
+- **`predict_fn`**: passed directly when its parameter names match the data's `inputs` keys; wrapped in a callable when they don't.
+
+## Running an evaluation
+
+<Steps>
+<Step>
+
+#### Run a first evaluation with a built-in scorer
+
+- **Action**: Start with a built-in judge and a small inline dataset.
+  ```python
+  import mlflow
+  from mlflow.genai.scorers import Correctness
+
+  def qa_predict_fn(question: str) -> str:
+      return my_agent.invoke(question)
+
+  results = mlflow.genai.evaluate(
+      data=[{
+          "inputs": {"question": "What is the capital of France?"},
+          "expectations": {"expected_response": "Paris"},
+      }],
+      predict_fn=qa_predict_fn,
+      scorers=[Correctness()],
+  )
+  ```
+- **Result**: `results` logs as its own MLflow Run, with per-scorer metrics visible in the UI alongside rationale and the underlying trace for each row.
+
+</Step>
+<Step>
+
+#### Add a custom function scorer
+
+- **Action**: Combine a built-in judge with a plain Python scorer for anything that doesn't need an LLM to check.
+  ```python
+  from mlflow.genai import scorer
+
+  @scorer
+  def is_concise(outputs: str) -> bool:
+      return len(outputs.split()) <= 5
+
+  results = mlflow.genai.evaluate(
+      data=eval_dataset,
+      predict_fn=qa_predict_fn,
+      scorers=[Correctness(), is_concise],
+  )
+  ```
+- **Result**: Cheap, deterministic checks (length, format, presence of a substring) run alongside LLM-judged criteria in the same evaluation, without spending a judge call on something code can check directly.
+
+</Step>
+<Step>
+
+#### Write a custom LLM-as-judge
+
+- **Action**: Reach for `make_judge()` when a built-in judge doesn't cover a specialized evaluation, you need more than pass/fail, or you need to validate that an agent made the right tool-use decisions.
+  ```python
+  from mlflow.genai.judges import make_judge
+  from typing import Literal
+
+  tool_judge = make_judge(
+      name="tool_usage_validator",
+      instructions=(
+          "Analyze the {{ trace }} to verify correct tool usage.\n\n"
+          "Check that the agent selected appropriate tools for the request."
+      ),
+      feedback_value_type=Literal["correct", "incorrect"],
+      model="openai:/gpt-4o-mini",
+  )
+  ```
+- **Result**: Only four reserved template variables are usable in `instructions`: `{{ inputs }}`, `{{ outputs }}`, `{{ expectations }}`, `{{ trace }}`. A custom variable like `{{ question }}` raises a validation error rather than silently doing nothing.
+
+</Step>
+<Step>
+
+#### Build a reusable evaluation dataset
+
+- **Action**: Curate a persistent, labeled test set instead of re-selecting raw traces every time you evaluate.
+  ```python
+  from mlflow.genai import datasets
+
+  dataset = datasets.create_dataset(name="rag-qa-regression", experiment_id=["123"])
+  dataset.merge_records(
+      mlflow.search_traces(experiment_names=["rag-retrieval-tuning"], filter_string="status = 'OK'")
+  )
+  ```
+- **Result**: Unlike passing raw traces to `evaluate()` each time, a dataset persists in the tracking server's backend, is reusable across many evaluation runs, and carries structured `expectations` and source/provenance metadata. Ground truth can also be attached separately with `mlflow.log_expectation()` before a trace is merged in.
+
+</Step>
+<Step>
+
+#### Wire evaluation into CI as a regression gate
+
+- **Action**: Assert on evaluation results inside a test, and run that test in CI.
+  ```python
+  import mlflow
+  from mlflow.genai.scorers import Guidelines
+
+  @mlflow.test
+  def test_answers_concisely_in_english(agent):
+      result = mlflow.genai.evaluate(
+          predict_fn=agent.invoke,
+          data=[{"inputs": {"question": "What are your support hours?"}}],
+          scorers=[
+              Guidelines(name="is_english", guidelines="The answer must be written in English."),
+              Guidelines(name="is_concise", guidelines="The answer must be a single sentence."),
+          ],
+      )
+      assert result.passed, result.reason
+  ```
+- **Result**: `result.passed` is `True` only when every scorer passes for every row; `result.reason` names which scorer failed and why. Pinning `MLFLOW_GENAI_JUDGE_DEFAULT_MODEL` keeps judge scoring consistent across CI runs — enable the pytest plugin (`addopts = ["-p", "mlflow.pytest.plugin"]` in `pyproject.toml`) so parallel runs via `pytest-xdist` still consolidate into a single MLflow run.
+
+</Step>
+</Steps>
+
+## Feedback as a dataset and judge feeder
+
+`mlflow.log_feedback()` (already instrumented per [Tracing](./tracing)'s "Collect user feedback" step) isn't just a per-trace label — MLflow frames it explicitly as a way to "generate high-quality training datasets from feedback, especially human corrections, to improve both AI applications and evaluation systems." Human corrections logged over time are the raw material for building better evaluation datasets and calibrating custom judges, not a one-off annotation exercise.
+
+## Operational knobs
+
+- **Concurrency** — `MLFLOW_GENAI_EVAL_MAX_WORKERS` (default 10) and `MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS` (default 10); total concurrent API calls is roughly `MAX_WORKERS × min(MAX_SCORER_WORKERS, num_scorers)`.
+- **Async predict functions** — supported automatically, with `MLFLOW_GENAI_EVAL_ASYNC_TIMEOUT` (default 300s); requires `nest_asyncio` in a notebook.
+- **Trace-emission validation** — MLflow runs one preliminary prediction to confirm `predict_fn` emits a trace before evaluating; skip with `MLFLOW_GENAI_EVAL_SKIP_TRACE_VALIDATION=true`.
+- **Judge cost** — visible in the assessment pane once LiteLLM is installed; the LLM Judge Alignment feature lets you trade a cheaper judge model against a calibration target instead of defaulting to the most expensive judge available.
+- **Deterministic judging** — pass `inference_params` (temperature, max_tokens) to a judge to control its behavior.
+- **Debugging a scorer itself** — `MLFLOW_GENAI_EVAL_ENABLE_SCORER_TRACING=true` inspects a scorer's own inputs, outputs, and internal steps.
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Using a custom variable in `make_judge()` instructions** instead of the four reserved ones (`inputs`, `outputs`, `expectations`, `trace`) — this raises a validation error, not a silent no-op.
+  - **Treating automatic evaluation as covering code-based scorers** — it only supports LLM judges; code-based checks need to be added explicitly as custom `@scorer` functions.
+  - **Re-selecting raw traces on every evaluation run** instead of curating a reusable Evaluation Dataset once — you lose persistence, reuse, and structured provenance.
+  - **Not pinning `MLFLOW_GENAI_JUDGE_DEFAULT_MODEL` in CI** — judge model drift between runs produces inconsistent pass/fail results on the same code.
+  - **Ignoring judge cost until it's already large-scale** — the LiteLLM cost view and LLM Judge Alignment feature exist precisely to catch this early.
+</Callout>
+
+## References
+
+- [MLflow — Evaluate LLMs and Agents quickstart](https://mlflow.org/docs/latest/genai/eval-monitor/quickstart/)
+- [MLflow — Running Evaluations](https://mlflow.org/docs/latest/genai/eval-monitor/running-evaluation/eval-examples/)
+- [MLflow — Automatic Evaluation](https://mlflow.org/docs/latest/genai/eval-monitor/automatic-evaluations/)
+- [MLflow — Judges and Scorers](https://mlflow.org/docs/latest/genai/eval-monitor/scorers/)
+- [MLflow — Evaluation Datasets](https://mlflow.org/docs/latest/genai/datasets/)
+- [MLflow — Annotation / feedback](https://mlflow.org/docs/latest/genai/assessments/feedback/)
+- [MLflow — Regression Testing and CI/CD](https://mlflow.org/docs/latest/genai/eval-monitor/regression-testing/)
+- [MLflow — Evaluate & Monitor FAQ](https://mlflow.org/docs/latest/genai/eval-monitor/faq/)

@@ -1,0 +1,76 @@
+---
+title: Databases
+description: Using database-level namespaces to isolate tenants, environments, and workloads within a shared vector database deployment.
+---
+
+Most vector databases support a namespace layer above collections — usually called a "database" — that groups collections together with their own access controls and resource quotas. It's the coarsest unit of isolation available, one level above partitions and collections, and choosing the right level for a given isolation need is mostly a matter of matching blast radius to what you're isolating.
+
+<Callout type="info">
+  This doc covers **when and how to use database-level namespaces** for isolation. It doesn't cover collection design (see [Collections](./collections)) or schema design (see [Schemas](./schemas)) — start there if you haven't created a collection yet.
+</Callout>
+
+## Core concepts
+
+- **Databases are the coarsest isolation unit** — above collections, above partitions. A deployment typically ships with one `default` database; creating additional ones is opt-in.
+- **Isolation, not sharding** — a database namespace doesn't split load across nodes by itself; it groups collections logically and can carry its own quotas (max collections, max storage/rate limits) and access grants. Two databases can still share the same underlying compute.
+- **Pick the isolation level that matches the blast radius**:
+  - **Separate database** — different tenants/teams that must never see each other's collection names, schemas, or data, or that need independent quotas.
+  - **Separate collection, same database** — different data shapes or lifecycles within one trusted team (e.g., `docs_v1` and `docs_v2` during a migration).
+  - **Partition within one collection** — same schema, same trust boundary, just a filterable subset for query efficiency (see [Search & Filtering](./search-tuning) for partition-key search).
+- **Naming is permanent enough to matter** — renaming a database is often unsupported or disruptive, so pick a naming scheme (e.g., `<tenant>_<env>`) before creating one, not after.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Decide the isolation boundary
+
+- **Action**: Before creating anything, classify the new workload against the list above. A second team standing up their own RAG pipeline against the same cluster is a database boundary; a second document type for the same team is a collection boundary.
+- **Result**: You avoid the common mistake of spinning up a new database per use case "just in case," which multiplies operational overhead (connection management, quota tuning, monitoring) without adding real isolation value.
+
+</Step>
+<Step>
+
+#### Create and scope a database
+
+- **Action**: Create the namespace and connect a client scoped to it.
+  ```python
+  from pymilvus import connections, db
+
+  connections.connect(host="localhost", port="19530")
+
+  db.create_database("tenant_acme")
+  db.using_database("tenant_acme")
+  ```
+- **Result**: Collections created after `using_database` live inside `tenant_acme` and are invisible to clients connected to other databases (including `default`). Each tenant/environment gets its own collection namespace without needing separate clusters.
+
+</Step>
+<Step>
+
+#### List and manage databases as an operational surface
+
+- **Action**: Treat databases as inventory to audit, not fire-and-forget.
+  ```python
+  from pymilvus import db
+
+  print(db.list_database())          # inventory check
+  db.drop_database("tenant_old")     # only after confirming it's empty / migrated
+  ```
+- **Result**: A periodic audit of `list_database()` against your tenant/environment registry catches orphaned databases (e.g., left behind after a tenant offboarding) before they accumulate as silent cost and attack surface.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Using databases for what partitions should do** — creating a new database per document category inside the same trust boundary adds connection and quota overhead for no isolation benefit. Use partitions or a scalar filter field instead.
+  - **Dropping a database without checking dependents** — dropping typically fails or cascades depending on the engine; confirm collections are migrated or intentionally discarded first.
+  - **No quota per database** — without per-database resource limits, one noisy tenant can starve others sharing the same cluster. Set quotas at creation time if your deployment supports it, not after the first incident.
+</Callout>
+
+## References
+
+- [Milvus — Manage Databases](https://milvus.io/docs/manage_databases.md)
+- [Collections](./collections)
+- [Search & Filtering](./search-tuning)

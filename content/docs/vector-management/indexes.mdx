@@ -1,0 +1,108 @@
+---
+title: Indexes
+description: Choosing and configuring a vector index as a tradeoff between recall, query latency, memory, and build time.
+---
+
+An index is what makes vector search sub-linear — without one, a search is a brute-force scan of every vector in the collection. There is no universally "best" index; every option trades some combination of recall, latency, memory footprint, and build time for the others, and the right choice depends on collection size, query volume, and how much recall loss is acceptable.
+
+<Callout type="info">
+  This doc is a **decision framework for index selection**, not an exhaustive parameter reference for every index variant. It assumes a schema and vector field already exist — see [Schemas](./schemas) — and feeds directly into [Collections](./collections)' load step.
+</Callout>
+
+## Core concepts
+
+- **FLAT is the correctness baseline, not a production index** — exact brute-force search, 100% recall by definition, no build time. Useful for small collections (low tens of thousands of vectors), or as a ground truth to measure another index's recall against — not for anything latency-sensitive at scale.
+- **IVF-family indexes trade recall for speed by clustering** — vectors are partitioned into clusters (`nlist`); a search only probes `nprobe` of them. More clusters probed = higher recall, higher latency. Good default for large collections with a moderate recall requirement and constrained memory (especially IVF_PQ/IVF_SQ8, which additionally compress vectors).
+- **HNSW-family indexes trade memory and build time for very high recall at low latency** — a graph-based structure that gives strong recall/latency numbers on in-memory workloads. The most common choice for latency-sensitive serving when memory budget allows; `M` and `ef_construction` control graph density and build cost, `ef_search` (aka search-time `ef`) controls the recall/latency tradeoff per query.
+- **DiskANN targets collections too large to fit in memory** — disk-resident graph index; higher latency than HNSW in-memory, but avoids the cost of loading massive collections fully into RAM.
+- **Sparse and binary vectors need their own index families** — a sparse-vector field ([Schemas](./schemas)) is indexed with something like a sparse inverted index, not HNSW/IVF; a binary vector field uses `BIN_FLAT`/`BIN_IVF_FLAT`. Don't reuse dense-vector index reasoning for these.
+- **GPU indexes exist for build-time- or query-throughput-bound workloads** — worth evaluating only once CPU index build/search time is an actual bottleneck, since they add infrastructure complexity.
+- **Scalar fields need indexes too** — a filter on an unindexed scalar field (see [Search & Filtering](./search-tuning)) falls back to a full scan of that field even if the vector search itself is fast.
+
+## Choosing an index
+
+| Situation | Reasonable default |
+|---|---|
+| Small collection (< ~50K vectors), or need exact ground truth | `FLAT` |
+| Large collection, memory-constrained, moderate recall need | `IVF_SQ8` or `IVF_PQ` |
+| Large collection, memory available, need high recall + low latency | `HNSW` |
+| Collection too large for memory | `DISKANN` |
+| Sparse vectors (BM25 / learned sparse) | Sparse inverted index |
+| Binary/hashed vectors | `BIN_IVF_FLAT` (approximate) or `BIN_FLAT` (exact) |
+| Build-time or query-throughput bound on CPU index | GPU-accelerated variant (e.g., `GPU_CAGRA`) |
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Start from the decision table, then tune
+
+- **Action**: Pick a starting index type from the table above based on collection size and latency budget, and set conservative parameters rather than tuning blind.
+  ```python
+  from pymilvus import MilvusClient
+
+  client = MilvusClient(uri="http://localhost:19530")
+  index_params = client.prepare_index_params()
+
+  # High-recall, latency-sensitive default for an in-memory collection
+  index_params.add_index(
+      field_name="dense_embedding",
+      index_type="HNSW",
+      metric_type="COSINE",
+      params={"M": 16, "efConstruction": 200},
+  )
+  client.create_index("documents", index_params)
+  ```
+- **Result**: A reasonable starting point that favors recall; `M`/`efConstruction` can be raised later if measured recall is insufficient, at the cost of build time and memory.
+
+</Step>
+<Step>
+
+#### Measure recall against the FLAT baseline before trusting it
+
+- **Action**: Run the same queries against a `FLAT`-indexed copy (or a brute-force scan) and compare result sets to your approximate index.
+  ```python
+  approx = client.search("documents", data=[query_vec], anns_field="dense_embedding", limit=10)
+  exact = client.search("documents_flat_baseline", data=[query_vec], anns_field="dense_embedding", limit=10)
+
+  recall = len(set(r["id"] for r in approx[0]) & set(r["id"] for r in exact[0])) / len(exact[0])
+  ```
+- **Result**: A number you can act on instead of guessing — if measured recall is below your requirement, increase `ef_search`/`nprobe` at query time before reaching for a more expensive index type.
+
+</Step>
+<Step>
+
+#### Tune the query-time recall knob independently of the index
+
+- **Action**: Adjust the search-time parameter (`ef` for HNSW, `nprobe` for IVF) per query or per use case, without rebuilding the index.
+  ```python
+  client.search(
+      "documents", data=[query_vec], anns_field="dense_embedding", limit=10,
+      search_params={"ef": 128},  # higher ef = higher recall, higher latency, same index
+  )
+  ```
+- **Result**: A high-stakes query path (e.g., compliance search) can request higher recall at the cost of latency, while a low-stakes autocomplete-style query stays fast — without maintaining two indexes.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Shipping FLAT to production "temporarily" on a growing collection** — fine at prototype scale, becomes a latency cliff as data grows; migrate before it's an incident.
+  - **Tuning index build parameters instead of search parameters for a recall problem** — often the cheaper fix is raising `ef_search`/`nprobe` at query time, not rebuilding the index with denser build parameters.
+  - **No scalar index on a field used in every filtered search** — vector index tuning won't help if the filter half of a filtered search (see [Search & Filtering](./search-tuning)) is scanning unindexed scalars.
+  - **Choosing an index type by benchmark blog post instead of your own recall/latency measurement** — index performance is workload- and data-distribution-dependent; always validate against your own data.
+</Callout>
+
+## References
+
+- [Milvus — Index Explained](https://milvus.io/docs/index-explained.md)
+- [Milvus — HNSW](https://milvus.io/docs/hnsw.md)
+- [Milvus — IVF_FLAT](https://milvus.io/docs/ivf-flat.md)
+- [Milvus — DiskANN](https://milvus.io/docs/diskann.md)
+- [Milvus — Sparse Inverted Index](https://milvus.io/docs/sparse-inverted-index.md)
+- [Milvus — GPU Index Overview](https://milvus.io/docs/gpu-index-overview.md)
+- [Schemas](./schemas)
+- [Collections](./collections)
+- [Search & Filtering](./search-tuning)

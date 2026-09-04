@@ -1,0 +1,174 @@
+---
+title: Prompts
+description: Managing prompts through a versioned lifecycle — register, version, alias, evaluate, and optimize — closing the loop from evaluation and monitoring signal back into prompt changes, using MLflow's Prompt Registry.
+---
+
+Prompts change constantly during development, and without versioning, aliasing, and lineage tracking, it's easy to lose track of what changed, when, and why a change helped or hurt. We use MLflow's Prompt Registry to manage that lifecycle with the same tracking discipline as the rest of this observability practice. This is the natural next step after [Evals](./evals) and [Monitoring](./monitoring) — closing the loop by using that evaluation and monitoring signal to actually change prompts, rather than iterating on them blind.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server. Evaluating and optimizing prompts builds directly on `mlflow.genai.evaluate()` and its scorers, already covered in [Evals](./evals) — that ground isn't repeated here, only bridged to.
+</Callout>
+
+## Core concepts
+
+- **Register → version → alias → load** — the full lifecycle. Versions are immutable once created; re-registering under the same name auto-increments the version rather than editing it in place.
+- **Three template types**: text (`{{variable}}`), chat (a list of role/content dicts), and Jinja2 (with control flow). Two optional fields on a version: `response_format` (Pydantic model or JSON schema — tracking/documentation only, **not enforced at runtime**) and `model_config` (inference parameters stored alongside the template).
+- **Aliases as the deployment mechanism** — mutable named references (`@production`, `@staging`, `@latest`) that decouple application code from specific version numbers, enabling A/B testing and rollback by re-pointing the alias rather than touching code.
+- **Two paths to changing a prompt**: iterate by hand in the Prompt Engineering UI or Playground, or optimize programmatically via `optimize_prompts()`. These aren't yet integrated with each other or with the Registry — more on that below.
+
+## Working with the registry
+
+<Steps>
+<Step>
+
+#### Register and version a prompt
+
+- **Action**: Register a template with variables, an optional structured response format, and a commit message.
+  ```python
+  import mlflow
+  from pydantic import BaseModel
+
+  class SummaryResponse(BaseModel):
+      summary: str
+      key_points: list[str]
+
+  prompt = mlflow.genai.register_prompt(
+      name="summarization-prompt",
+      template="Summarize content you are provided with in {{ num_sentences }} sentences.\nSentences: {{ sentences }}",
+      response_format=SummaryResponse,
+      commit_message="Initial commit",
+      tags={"author": "team-rag", "task": "summarization"},
+  )
+  ```
+- **Result**: A new version 1 is created. Calling `register_prompt()` again with the same `name` creates version 2, 3, and so on — MLflow auto-increments; the template, commit message, and metadata of an existing version can never be altered afterward.
+
+</Step>
+<Step>
+
+#### Alias it for deployment
+
+- **Action**: Point a named alias at a specific version.
+  ```python
+  mlflow.genai.set_prompt_alias("summarization-prompt", alias="production", version=2)
+  ```
+- **Result**: Application code loads `prompts:/summarization-prompt@production` and never needs to know the underlying version number. Rolling back or A/B testing is just re-pointing the alias to a different version — no code changes, no redeploy.
+
+</Step>
+<Step>
+
+#### Use it in application code
+
+- **Action**: Load by alias, format with keyword arguments matching the template's variable names, and feed the result into an LLM call.
+  ```python
+  prompt = mlflow.genai.load_prompt("prompts:/question@latest")
+
+  from openai import OpenAI
+  client = OpenAI()
+  messages = [{"role": "user", "content": prompt.format(name="1+1")}]
+  response = client.chat.completions.create(model="gpt-5-mini", messages=messages)
+  ```
+- **Result**: `.format()` takes keyword args matching the `{{ }}` variable names (without the braces) and returns the rendered string. For LangChain, convert first — MLflow uses double braces, LangChain expects single: `prompt.to_single_brace_format()` fed into `ChatPromptTemplate.from_messages([("system", ...), ("placeholder", "{messages}")])`.
+
+</Step>
+<Step>
+
+#### Bundle the prompt with a logged model
+
+- **Action**: Associate a specific prompt version with a logged model for lineage.
+  ```python
+  with mlflow.start_run(run_name="summarizer-model"):
+      mlflow.langchain.log_model(chain, name="model", prompts=["prompts:/summarization-prompt/2"])
+  ```
+- **Result**: `prompts` accepts a list of prompt URIs or objects. This creates bidirectional lineage — the model's page in the UI shows which prompts it uses, and the prompt's page shows which model runs consume it.
+
+</Step>
+<Step>
+
+#### Evaluate a prompt version
+
+- **Action**: Load a version inside `predict_fn` and run it through the same evaluation flow as [Evals](./evals).
+  ```python
+  def predict_fn(sentences: str, num_sentences: int) -> str:
+      prompt = mlflow.genai.load_prompt("prompts:/summarization-prompt@latest")
+      return call_llm(prompt.format(sentences=sentences, num_sentences=num_sentences))
+
+  results = mlflow.genai.evaluate(data=eval_data, predict_fn=predict_fn, scorers=[answer_similarity])
+  ```
+- **Result**: Each prompt version's evaluation run is tracked as its own MLflow Experiment run, comparable side by side in the UI — the same scorer mechanics as [Evals](./evals), just with the prompt swapped out as the variable under test.
+
+</Step>
+<Step>
+
+#### Optimize a prompt programmatically
+
+- **Action**: Point `optimize_prompts()` at a prompt, a training dataset, and a choice of optimizer.
+  ```python
+  result = mlflow.genai.optimize_prompts(
+      predict_fn=predict_fn,
+      train_data=dataset,       # {"inputs": {...}, "expectations": {...}} records
+      prompt_uris=["prompts:/qa/1"],
+      optimizer=GepaPromptOptimizer(reflection_model="openai:/gpt-5"),
+      scorers=[Correctness()],
+  )
+  ```
+- **Result**: Two optimizer strategies to choose between: **GEPA** extracts learning signal from execution traces and achieves "superior results with dramatically fewer iterations (up to 35x fewer rollouts)" — best with a decent-sized dataset (100+ records) and clear evaluation metrics. **Metaprompting** restructures zero-shot (no training data) or learns few-shot from your data, and runs fast since it only does one evaluation round. The result is a `PromptOptimizerResult` with new optimized prompt versions/URIs plus before/after metric comparison.
+
+</Step>
+<Step>
+
+#### Auto-rewrite a prompt for a model migration
+
+- **Action**: This isn't a separate tool — it's the same `optimize_prompts()` call applied to a migration scenario: downgrading models for cost, or switching providers, while preserving output quality.
+  ```python
+  # 1. Capture outputs from the current model via tracing, then:
+  dataset = mlflow.genai.datasets.create_dataset(name="migration-training-set", experiment_id=["123"])
+  dataset.merge_records(mlflow.search_traces(experiment_names=["prod-agent"]))
+
+  # 2. Point predict_fn at the new target model, then optimize against the old model's outputs:
+  result = mlflow.genai.optimize_prompts(
+      predict_fn=predict_fn,   # now calling the new model
+      train_data=dataset,
+      prompt_uris=[prompt.uri],
+      optimizer=GepaPromptOptimizer(reflection_model="openai:/gpt-5"),
+      scorers=[Equivalence(model="openai:/gpt-5")],
+  )
+  ```
+- **Result**: The optimizer rewrites the prompt's instructions to compensate for the new model's differences — e.g. a terse `"Classify the sentiment. Answer 'positive' or 'negative' or 'neutral'"` becomes an explicit, formatting-heavy version with defined categories, because the new model needs more scaffolding than the old one did. Requires MLflow ≥3.5.0.
+
+</Step>
+<Step>
+
+#### Iterate interactively
+
+- **Action**: For hands-on iteration rather than a programmatic optimization run, use the Prompt Engineering UI (duplicate a run, adjust the template, compare via Table view, add test inputs for robustness) or the LLM Playground's **Load prompt from registry** button to pull a specific registered version into an interactive chat surface.
+- **Result**: In the Playground, chat-formatted prompts populate the full conversation and text-formatted prompts load as a single user message; if the version has a stored `model_config`, matching sampling parameters and response-format settings auto-apply, confirmed via a "Loaded `<name>` v`<version>` with settings" toast. The Playground requires an AI Gateway chat endpoint configured first, and submits requests through `/gateway/mlflow/v1/chat/completions`.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  **Known gap.** Per MLflow's own docs, direct integration between the Prompt Registry and the Prompt Engineering UI is "coming soon" — today, moving a winning template out of the Engineering UI (or the Playground) into a registered, versioned prompt is a manual copy-over step, not an automatic promotion. Plan for that manual step rather than expecting one workflow to feed the other automatically.
+</Callout>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Assuming `response_format` is enforced at runtime** — it's tracking/documentation only; your application code (and the provider's own structured-output API) is responsible for actual validation.
+  - **Trying to edit an existing prompt version in place** — versions are immutable by design; changes always create a new version.
+  - **Hardcoding a version number in application code** instead of an alias — this throws away the rollback/A-B mechanism aliases exist for.
+  - **Using GEPA with far fewer than the recommended 100+ records** — its efficiency gains assume a dataset of decent size and clear evaluation metrics; below that, Metaprompting's faster single-round approach may fit better.
+  - **Treating auto-rewrite as a separate API from `optimize_prompts()`** — it's the same function applied to a migration scenario, not a distinct tool.
+</Callout>
+
+## References
+
+- [MLflow — Prompt Registry overview](https://mlflow.org/docs/latest/genai/prompt-registry/)
+- [MLflow — Create and edit prompts](https://mlflow.org/docs/latest/genai/prompt-registry/create-and-edit-prompts/)
+- [MLflow — Evaluate prompts](https://mlflow.org/docs/latest/genai/prompt-registry/evaluate-prompts/)
+- [MLflow — Aliases](https://mlflow.org/docs/latest/genai/prompt-registry/manage-prompt-lifecycles-with-aliases/)
+- [MLflow — Use prompts in apps](https://mlflow.org/docs/latest/genai/prompt-registry/use-prompts-in-apps/)
+- [MLflow — Log prompts with models](https://mlflow.org/docs/latest/genai/prompt-registry/log-with-model/)
+- [MLflow — Structured output](https://mlflow.org/docs/latest/genai/prompt-registry/structured-output/)
+- [MLflow — Optimize prompts](https://mlflow.org/docs/latest/genai/prompt-registry/optimize-prompts/)
+- [MLflow — Auto-rewrite prompts for new models](https://mlflow.org/docs/latest/genai/prompt-registry/rewrite-prompts/)
+- [MLflow — Prompt Engineering UI](https://mlflow.org/docs/latest/genai/prompt-registry/prompt-engineering/)
+- [MLflow — LLM Playground](https://mlflow.org/docs/latest/genai/prompt-registry/playground/)

@@ -1,0 +1,71 @@
+---
+title: Architecture
+description: The host-client-server model, the data and transport layer split, and the core primitives that define what MCP servers and clients can offer each other.
+---
+
+MCP's architecture separates three concerns that are easy to conflate when building an ad hoc tool-calling integration: who's talking to whom (participants), what they're allowed to say (the data layer's primitives), and how the bytes actually move (the transport layer). Understanding this split up front makes every other doc in this section — building a server, building a client, connecting them, securing them — a matter of filling in one layer at a time rather than an undifferentiated integration project.
+
+<img src="/images/mcp/architecture.svg" alt="MCP architecture: an MCP Host application (e.g. an AI assistant) contains three MCP Clients, each maintaining a dedicated connection to one MCP Server — Client 1 to a local Filesystem server over stdio, Client 2 to a local Database server over stdio, and Client 3 to a remote Sentry server over Streamable HTTP" style={{ margin: '1.5rem 0' }} />
+
+<Callout type="info">
+  This doc covers **conceptual architecture and vocabulary** — participants, layers, primitives, and the discovery/notification lifecycle. It's the foundation for [Build a Server](./build-server) and [Build a Client](./build-client), not an implementation guide itself.
+</Callout>
+
+## Core concepts
+
+- **Host, client, and server are distinct roles** — the **host** is the AI application itself (Claude Code, Claude Desktop, VS Code); it creates one **client** per server connection, and each client maintains a dedicated, stateful-feeling connection to one **server**. A host talking to three servers runs three client instances internally, even though a user experiences it as one application.
+- **Local vs. remote is a transport distinction, not an architectural one** — a local server (stdio transport) typically serves exactly one client, launched as a subprocess of the host; a remote server (Streamable HTTP transport) typically serves many clients concurrently. The same primitives (tools, resources, prompts) work identically either way.
+- **Two layers, cleanly separated** — the **data layer** defines the JSON-RPC 2.0 message protocol: capability discovery, the primitives, and notifications. The **transport layer** defines how those messages actually move (stdio pipes vs. HTTP) and how a connection authenticates. Because the transport layer abstracts these details away, the same JSON-RPC message format applies regardless of which transport carries it.
+- **MCP is stateless at the protocol level** — every request carries its own protocol version and capability metadata rather than relying on a server remembering prior requests. A client typically calls `server/discover` first to learn what a server supports (tools, resources, prompts, notification types) and caches the result for the TTL the server advertises, but this is a convenience, not a requirement — any request can be sent directly, with a version mismatch handled as an explicit error rather than an assumption.
+- **Server primitives are what a server exposes**: **tools** (executable actions an AI application can invoke), **resources** (contextual data — file contents, records, API responses), and **prompts** (reusable interaction templates). Each has list/get/execute-style methods (`tools/list`, `tools/call`, and so on) so a client can discover what's available before using it, rather than needing it hardcoded.
+- **Elicitation is the current client primitive** — it lets a server ask the user (via the host) for additional input or confirmation mid-operation. Two older client primitives, **sampling** (a server requesting an LLM completion from the client) and **logging** (structured log messages from server to client), are deprecated as of protocol version `2026-07-28` — new servers should call LLM provider APIs directly instead of sampling, and log to stderr (stdio) or OpenTelemetry instead of the logging primitive.
+- **Notifications keep clients in sync without polling** — a client opts into specific notification types (e.g., "tell me when the tool list changes") over a subscription stream; the server pushes updates only when relevant state actually changes, and notifications carry no response expectation (plain JSON-RPC notification semantics, no `id` field).
+
+## How a connection actually unfolds
+
+<Steps>
+<Step>
+
+#### Discovery
+
+The client sends `server/discover`, declaring its own protocol version and capabilities. The server responds with the versions and capabilities it supports (e.g., `"tools": {"listChanged": true}`), plus a cache TTL — this response is meant to be reused, not re-fetched on every subsequent request.
+
+</Step>
+<Step>
+
+#### Primitive discovery
+
+The client lists what it can use — `tools/list`, `resources/list`, `prompts/list` — each returning structured metadata (name, description, input schema for tools) rather than requiring the client to already know what exists.
+
+</Step>
+<Step>
+
+#### Execution
+
+The client invokes a specific primitive by name — `tools/call` with the exact name and arguments from the schema the server advertised. The server responds with structured content (text, and potentially other content types depending on the tool).
+
+</Step>
+<Step>
+
+#### Ongoing sync
+
+If the client subscribed to change notifications, the server pushes them as state changes (a tool becoming available, a resource updating) — the client refreshes its view of the relevant primitive list in response, rather than polling on a timer.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Assuming a connection is stateful in the way a typical session is** — every request should be treated as self-contained; don't design server logic that depends on remembering an earlier request outside of the primitives designed for that (e.g., resource subscriptions).
+  - **Building against sampling or logging as if they were current** — both are deprecated in `2026-07-28`; new servers should call LLM APIs directly and log to stderr/OpenTelemetry.
+  - **Confusing "local" with "single-user" and "remote" with "multi-tenant" as protocol guarantees** — they're just the typical shape stdio and Streamable HTTP take; the protocol itself doesn't enforce either.
+  - **Polling instead of subscribing** — if a server supports change notifications for a primitive you care about, subscribe rather than re-listing on an arbitrary timer.
+</Callout>
+
+## References
+
+- [Model Context Protocol — Architecture Overview](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture)
+- [Model Context Protocol — Understanding MCP Servers](https://modelcontextprotocol.io/docs/2026-07-28/learn/server-concepts)
+- [Model Context Protocol — Understanding MCP Clients](https://modelcontextprotocol.io/docs/2026-07-28/learn/client-concepts)
+- [Build a Server](./build-server)
+- [Build a Client](./build-client)

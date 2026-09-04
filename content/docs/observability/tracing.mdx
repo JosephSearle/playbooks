@@ -1,0 +1,470 @@
+---
+title: Tracing
+description: Span instrumentation conventions for LLM application observability, including the span type taxonomy, RETRIEVER schema, token usage attributes, and production tuning — implemented with MLflow tracing.
+---
+
+Understanding what an LLM application actually did — which calls it made, in what order, with what inputs and outputs — requires capturing execution as a structured hierarchy of spans, not scattered log lines. Good instrumentation makes that hierarchy queryable, enables automated evaluation scorers, and surfaces root causes during incidents; bad instrumentation produces opaque traces that are useless for both debugging and quality assessment. We use MLflow tracing to capture this execution tree.
+
+This runbook walks through instrumenting your code with the span conventions required against your MLflow tracking server.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server. Once your code is instrumented per this doc, see [Experiments](./experiments) for logging runs and evaluating traces with MLflow's GenAI scorers — several of those scorers (`RetrievalGroundedness`, `RetrievalRelevance`) depend directly on the RETRIEVER span schema covered here.
+</Callout>
+
+## Turning on tracing
+
+<Steps>
+<Step>
+
+#### Automatic tracing
+
+- **Action**: For any supported framework or model provider, enable it with a one-line autolog call — no code changes to your application logic required.
+  ```python
+  import mlflow
+
+  mlflow.anthropic.autolog()
+  mlflow.langchain.autolog()
+  mlflow.openai.autolog()
+  ```
+- **Result**: Every call through that library is captured as a span automatically. Multiple autologs can be enabled at once — a LangChain agent calling Anthropic under the hood produces one connected trace, not two separate ones.
+
+</Step>
+<Step>
+
+#### Manual tracing
+
+- **Action**: Reach for `@mlflow.trace` directly (as used throughout this doc) for your own business logic that autolog can't see — retrieval calls, custom tool functions, orchestration code. For tracing a block of code without a function boundary, use `mlflow.start_span()` as a context manager instead:
+  ```python
+  with mlflow.start_span(name="rerank_documents") as span:
+      span.set_inputs({"documents": documents, "query": query})
+      reranked = reranker.rerank(documents, query)
+      span.set_outputs(reranked)
+  ```
+- **Result**: Manual and automatic tracing compose — a manually-traced function calling into an autologged library nests correctly in the same trace. One ordering rule to know: `@mlflow.trace` should generally be the **outermost** decorator on a function, except when combined with a web framework's route decorator (Flask, FastAPI), where the framework decorator stays outermost.
+
+</Step>
+<Step>
+
+#### Disabling tracing
+
+- **Action**: Turn tracing off globally when needed — local debugging noise, cost control, or isolating a performance issue.
+  ```python
+  mlflow.tracing.disable()
+  # ...
+  mlflow.tracing.enable()
+  ```
+- **Result**: No spans are recorded while disabled. Re-enable before relying on traces again — this is a global switch, not per-module.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Autologging gets you spans automatically, but it does not know about the evaluation scorers' requirements. The span type taxonomy and instrumentation conventions below still need to be followed manually wherever autolog doesn't already produce a compliant span — most commonly your own RETRIEVER and TOOL functions.
+</Callout>
+
+## Span type taxonomy
+
+Choose the span type that best matches each unit of work:
+
+| SpanType | When to use |
+|---|---|
+| `CHAT_MODEL` | Chat model call (Anthropic, OpenAI, Bedrock, Watsonx) |
+| `LLM` | Raw completion call (non-chat interface) |
+| `RETRIEVER` | Document retrieval from a vector store, keyword index, or hybrid search |
+| `AGENT` | Agentic reasoning loop (reason → act → observe) |
+| `CHAIN` | Sequential pipeline (e.g. prompt → LLM → parser) |
+| `TOOL` | Single tool invocation inside an agent loop |
+| `EMBEDDING` | Embedding model call |
+| `RERANKER` | Document re-ranking step |
+| `PARSER` | Structured output parsing / extraction |
+
+## Universal span checklist
+
+Every span, regardless of type, must satisfy:
+
+- `name` is human-readable and describes the function (`"retrieve_context"`, not `"<lambda>"`)
+- `inputs` is non-null and captures the primary inputs
+- `outputs` is non-null and captures the primary output
+- `status` is explicitly set to `OK` or `ERROR` (not left as `UNSET`)
+- `span_type` matches one of the types above or a descriptive custom string
+
+## Instrumenting your spans
+
+<Steps>
+<Step>
+
+#### Instrument RETRIEVER spans
+
+- **Action**: This is the most important convention — without it, the built-in evaluation scorers (`RetrievalGroundedness`, `RetrievalRelevance`, `RetrievalSufficiency`) cannot process your traces at all.
+  ```python
+  import mlflow
+  from mlflow.entities import Document
+
+  @mlflow.trace(span_type="RETRIEVER", name="retrieve_context")
+  def retrieve(query: str, k: int = 5) -> list[Document]:
+      results = vector_store.similarity_search_with_score(query, k=k)
+
+      documents = [
+          Document(
+              page_content=doc.page_content,           # required: full chunk text
+              metadata={
+                  "doc_uri": doc.metadata["source"],   # required: stable URI for the source
+                  "relevance_score": float(score),     # required: 0.0–1.0
+                  "chunk_id": doc.metadata.get("chunk_id"),
+              },
+          )
+          for doc, score in results
+      ]
+
+      # Critical: sort descending by relevance_score
+      documents.sort(key=lambda d: d.metadata.get("relevance_score", 0), reverse=True)
+      return documents
+  ```
+- **Result**: Retrieved documents carry `doc_uri` and `relevance_score` in a schema the RETRIEVER-dependent scorers can parse.
+
+</Step>
+<Step>
+
+#### Set LLM token usage attributes
+
+- **Action**: Token usage and model identity are required for cost analysis and capacity planning — set them on every `CHAT_MODEL` or `LLM` span.
+  ```python
+  import mlflow
+
+  @mlflow.trace(span_type="CHAT_MODEL", name="call_llm")
+  def call_llm(messages: list[dict], model: str = "claude-sonnet-4-6") -> str:
+      response = anthropic_client.messages.create(
+          model=model,
+          messages=messages,
+          max_tokens=1024,
+      )
+
+      span = mlflow.get_current_active_span()
+      span.set_attributes({
+          # Required
+          "mlflow.tokenUsage.inputTokens": response.usage.input_tokens,
+          "mlflow.tokenUsage.outputTokens": response.usage.output_tokens,
+          "ai.model.id": model,
+          "ai.model.provider": "anthropic",
+
+          # Optional but recommended
+          "ai.inference.parameters.max_tokens": 1024,
+          "ai.inference.parameters.temperature": 0.7,
+
+          # Anthropic cache tokens (when using prompt caching)
+          "mlflow.tokenUsage.cacheReadInputTokens": getattr(response.usage, "cache_read_input_tokens", 0),
+          "mlflow.tokenUsage.cacheCreationInputTokens": getattr(response.usage, "cache_creation_input_tokens", 0),
+      })
+
+      return response.content[0].text
+  ```
+- **Result**: Every LLM call's cost and model identity is queryable across traces, not just the final answer text.
+
+</Step>
+<Step>
+
+#### Attach exception events on ERROR spans
+
+- **Action**: Any span that catches an exception and sets status `ERROR` must also attach an exception event — without this, error analysis tools cannot extract the failure reason.
+  ```python
+  import time
+  import traceback
+  import mlflow
+  from mlflow.entities import SpanEvent
+
+  @mlflow.trace(span_type="TOOL", name="call_external_api")
+  def call_external_api(endpoint: str) -> dict:
+      span = mlflow.get_current_active_span()
+      try:
+          return requests.get(endpoint, timeout=10).json()
+      except Exception as exc:
+          span.add_event(
+              SpanEvent(
+                  name="exception",
+                  timestamp=int(time.time_ns()),
+                  attributes={
+                      "exception.type": type(exc).__name__,
+                      "exception.message": str(exc),
+                      "exception.stacktrace": traceback.format_exc(),
+                  },
+              )
+          )
+          span.set_status("ERROR")
+          raise
+  ```
+- **Result**: Failed spans carry enough detail (type, message, stack trace) for error analysis tools and Trace Mode to explain what went wrong, not just that something did.
+
+</Step>
+<Step>
+
+#### Follow TOOL span conventions
+
+- **Action**: Name and shape TOOL spans consistently — `inputs` as all tool arguments by name, `outputs` as the actual return value (not a wrapper object), and `name` as the canonical tool name.
+  ```python
+  @mlflow.trace(span_type="TOOL", name="web_search")
+  def web_search(query: str, max_results: int = 5) -> list[dict]:
+      return search_client.search(query, max_results=max_results)
+  ```
+- **Result**: Tool spans are named `"web_search"`, not `"_call_search_api"` — queryable and consistent across your agent's tool calls.
+
+</Step>
+<Step>
+
+#### Follow AGENT and CHAIN span conventions
+
+- **Action**: For agentic loops and sequential pipelines, set `inputs` to the user's original request or the pipeline's input, and `outputs` to the final response returned to the caller — not intermediate state.
+  ```python
+  @mlflow.trace(span_type="AGENT", name="research_agent")
+  def run_agent(user_message: str) -> str:
+      # inner tool calls create child spans automatically
+      ...
+      return final_response
+  ```
+- **Result**: The top-level span reflects what the caller actually asked and received, while inner tool/LLM calls nest underneath it automatically as child spans.
+
+</Step>
+</Steps>
+
+## Tracking users and sessions
+
+Without user/session metadata, multi-turn conversations show up as unrelated individual traces and there's no way to filter down to one user's activity. Attach both as early as possible in the request lifecycle:
+
+```python
+with mlflow.tracing.context(session_id=session_id, user=user_id):
+    run_agent(user_message)
+```
+
+Or inline, from inside a traced function:
+
+```python
+mlflow.update_current_trace(session_id=session_id, user=user_id)
+```
+
+Both set the same underlying metadata keys — `mlflow.trace.session` and `mlflow.trace.user` — which makes them filterable via `mlflow.search_traces()`:
+
+```python
+mlflow.search_traces(filter_string="metadata.`mlflow.trace.user` = 'user-123'")
+mlflow.search_traces(filter_string="metadata.`mlflow.trace.session` = 'session-abc-456'")
+```
+
+## Enhancing your traces
+
+<Steps>
+<Step>
+
+#### Track token usage and cost
+
+- **Action**: Beyond the per-span `mlflow.tokenUsage.inputTokens`/`outputTokens` attributes set manually in the CHAT_MODEL step above, MLflow (≥3.10.0, with the `[genai]` extra on the tracking server) aggregates usage and cost automatically via `mlflow.chat.tokenUsage` (`input_tokens`, `output_tokens`, `total_tokens`) and `mlflow.llm.cost` (`input_cost`, `output_cost`, `total_cost`, in USD).
+  ```python
+  trace = mlflow.get_trace(trace_id=last_trace_id)
+  total_usage = trace.info.token_usage
+  total_cost = trace.info.cost
+  ```
+- **Result**: The manual attributes and the aggregated `TraceInfo` fields aren't in conflict — the manual ones are what you set per-call for the LLM token usage step's own bookkeeping; the aggregated fields are what MLflow rolls up automatically across every LLM call in the whole trace, without you summing anything yourself.
+
+</Step>
+<Step>
+
+#### Tag traces
+
+- **Action**: Attach mutable key-value labels for grouping and filtering — during execution with `mlflow.update_current_trace(tags={...})`, or after the trace has completed with `mlflow.set_trace_tag(trace_id=..., key=..., value=...)`.
+  ```python
+  mlflow.update_current_trace(tags={"environment": "staging"})
+  mlflow.set_trace_tag(trace_id="tr-1234567890abcdef", key="reviewed", value="true")
+  ```
+- **Result**: Tags are queryable via `mlflow.search_traces()` — exact match with `tags.environment = 'production'`, pattern match with `tags.topic LIKE '%mlflow%'`. Setting a tag that already exists overwrites it.
+
+</Step>
+<Step>
+
+#### Collect user feedback
+
+- **Action**: Log a quality assessment against a trace from any source — a human reviewer, a rule, or an LLM judge.
+  ```python
+  mlflow.log_feedback(
+      trace_id="tr-1234567890abcdef",
+      name="response_quality",
+      value=0.85,
+      rationale="Response addresses core question comprehensively",
+      source=AssessmentSource(
+          source_type=AssessmentSourceType.HUMAN,
+          source_id="expert@company.com",
+      ),
+  )
+  ```
+- **Result**: The feedback attaches immediately to the trace. `source_type` is one of `HUMAN`, `CODE`, or `LLM_JUDGE` — this is the same `log_feedback` operation exposed as an MCP tool in [Querying traces via MCP](#querying-traces-via-mcp) below, if you'd rather have an assistant log assessments than call this directly.
+
+</Step>
+<Step>
+
+#### Redact sensitive data
+
+- **Action**: Register a filter function that mutates spans in place before they ever leave your application.
+  ```python
+  def redact_pii(span: Span) -> None:
+      span.set_inputs(scrub(span.inputs))
+      span.set_outputs(scrub(span.outputs))
+
+  mlflow.tracing.configure(span_processors=[redact_pii])
+  ```
+- **Result**: Per MLflow's docs, "the filters are applied at client side before sending the span to the backend, the sensitive data never goes out of your application." Clear filters with `mlflow.tracing.configure(span_processors=[])`, or reset all tracing config with `mlflow.tracing.reset()`.
+
+</Step>
+<Step>
+
+#### Set log levels
+
+- **Action**: There's no global env var for this — log level is set per span, either on the decorator or on an active span.
+  ```python
+  @mlflow.trace(log_level=SpanLogLevel.INFO)
+  def answer(query: str) -> str:
+      ...
+
+  span.set_log_level("WARNING")
+  ```
+- **Result**: In the MLflow UI, a trace's Filter panel has a "Minimum log level" slider (Debug/Info/Warning/Error/Critical) that controls what's *displayed*, not what's recorded — the level set in code determines what's actually captured.
+
+</Step>
+<Step>
+
+#### Track application versions
+
+- **Action**: Attach custom deployment context via metadata, on top of what MLflow captures automatically.
+  ```python
+  mlflow.update_current_trace(metadata={
+      "app_version": os.environ["APP_VERSION"],
+      "deployment_id": os.environ["DEPLOYMENT_ID"],
+      "region": os.environ["REGION"],
+  })
+  ```
+- **Result**: MLflow auto-captures `mlflow.source.name`, `mlflow.source.type` (`NOTEBOOK`/`LOCAL`/`UNKNOWN`/custom, e.g. `PRODUCTION`), and git context (`mlflow.source.git.commit`, `.git.branch`, `.git.repoURL`) without any extra code. Combined with the custom fields above, both are filterable the same way as tags — `metadata.app_version = '2.1.0'`, `metadata.environment = 'production'` — which is what makes regression detection across releases possible.
+
+</Step>
+</Steps>
+
+## Known benign exception events
+
+<Callout type="info">
+  If you see a span in the trace UI with an `"exception"` event whose `exception.type` is `ParentCommand` or `GraphInterrupt`, this is expected and does not indicate a bug.
+</Callout>
+
+LangGraph raises two of its own control-flow mechanisms as exceptions internally, both caught by its own executor before either reaches application code:
+
+- **`ParentCommand`** — subgraph → parent-graph handoffs (a tool or node returning `Command(graph=Command.PARENT, goto=..., update=...)`), e.g. agent-to-agent handoffs like Triage → Documentation.
+- **`GraphInterrupt`** — an `interrupt()` call that pauses a graph awaiting user input, e.g. `search_platform.py`'s `search_and_select` node asking the user to pick a platform before a reservation workflow continues.
+
+Neither is a failure — but LangChain autolog has no way to distinguish either from a genuine exception, so without intervention every agent handoff or interrupt would surface as a span-level exception event.
+
+`src/tracing.py`'s `init_mlflow()` registers a span processor (`_downgrade_benign_control_flow_errors`, via `mlflow.tracing.configure(span_processors=[...])`) that downgrades a span's `status` from `ERROR` back to `OK` whenever every exception event on it is one of these benign types (`_BENIGN_EXCEPTION_TYPES`) — so `trace.info.state` and span `status` stay clean and don't train reviewers to ignore real errors. The exception event itself is deliberately left attached to the span (not stripped) so the handoff/interrupt is still visible when inspecting span detail. A span with any other exception type, or a mix of a benign type and a real exception, is left as `ERROR` untouched.
+
+**If you're debugging a trace and see a `ParentCommand` or `GraphInterrupt` exception event:** check the span's `status` first. If it's `OK`, this is just the handoff/interrupt mechanism firing normally — not the source of whatever issue you're chasing. Keep looking for spans that are actually `ERROR`. Note that MLflow tracing only instruments the LangGraph execution itself — if a turn's trace shows no errors but something still went wrong downstream (e.g. in the A2A/SSE transport layer or the client UI), that's outside what this trace can show; check server logs or the client's network activity for that request instead.
+
+<Callout type="info">
+  A trace with `state: OK` can still contain `ChatOpenAI` spans with `STATUS_CODE_ERROR` — that means the model backend failed at least once but the agent recovered and completed the turn successfully. Filter on `tags.model_retry_occurred = 'true'` to find these, not on trace state.
+</Callout>
+
+Every agent's model call is wrapped in `ModelRetryMiddleware` (`src/agents/base.py::_build_middleware_stack`), scoped to `openai.APIError` (backend connection/status/timeout failures — e.g. a self-hosted model's OpenShift route being down). If the retry succeeds, nothing is visible except the earlier failed `ChatOpenAI` span(s) sitting under an otherwise-`OK` ancestor chain. If retries are exhausted, `_on_model_call_failure` (same file) returns a friendly "temporarily unavailable" message instead of raising — so the turn still completes and the trace still ends `OK` — but first tags the trace via `mlflow.update_current_trace(tags={"model_retry_occurred": "true", "model_retry_exception_type": ...})`.
+
+This mirrors the `ParentCommand` case above: trace-level `OK` is the honest signal (the user did get a valid response), and the underlying failure detail isn't hidden, just not surfaced at the top level. Search for turns that hit a model outage — even ones that self-healed — with:
+
+```python
+mlflow.search_traces(filter_string="tags.model_retry_occurred = 'true'")
+```
+
+## Viewing and managing traces
+
+The MLflow UI's trace table shows Trace ID, request/response (root span inputs/outputs), session/user, token usage, execution time, state (`OK` / `ERROR` / `IN_PROGRESS`), tags, and assessments — some columns are hidden by default and need enabling via the column selector. The search bar filters by name, tags, or other metadata; the filter dropdown adds state, user, session, and feedback-value filters on top of that.
+
+From the UI you can also bulk-delete traces (checkbox select, Shift-click for a range), edit tags directly on a trace, and export a selection to an Evaluation Dataset. The programmatic equivalents are `mlflow.search_traces()` and `mlflow.get_trace()` — useful for scripting the same queries instead of clicking through the UI. See [Querying traces via MCP](#querying-traces-via-mcp) below if you'd rather have an AI assistant query and manage traces directly instead of browsing the UI yourself.
+
+## Querying traces via MCP
+
+Debugging often means bouncing between a coding assistant and the trace UI, copy-pasting trace IDs and payloads back and forth. MLflow's experimental MCP server (see [MCP](../mcp/overview) for the protocol itself) removes that friction by exposing trace data as MCP tools, so a coding assistant can query and manage traces directly instead of you fetching them manually.
+
+<Callout type="info">
+  Requires MLflow **≥3.5.1**. MLflow marks this feature **experimental and may change in future releases** — treat it as a debugging convenience, not a stable integration to build production tooling on.
+</Callout>
+
+The server exposes nine tools across three groups:
+
+| Group | Tools |
+|---|---|
+| Data retrieval | `search_traces`, `get_trace` |
+| Trace management | `set_trace_tag`, `delete_trace_tag`, `delete_traces` |
+| Assessment operations | `log_feedback`, `log_expectation`, `get_assessment`, `update_assessment`, `delete_assessment` |
+
+Install the extra and point your MCP-compatible coding assistant (a host application like Claude Code, or an editor extension) at the server:
+
+```bash
+pip install 'mlflow[mcp]>=3.5.1'
+```
+
+```json
+{
+  "servers": {
+    "mlflow-mcp": {
+      "command": "uv",
+      "args": ["run", "--with", "mlflow[mcp]>=3.5.1", "mlflow", "mcp", "run"],
+      "env": {
+        "MLFLOW_TRACKING_URI": "<MLFLOW_TRACKING_URI>",
+        "MLFLOW_TRACKING_TOKEN": "<MLFLOW_TRACKING_TOKEN>",
+        "MLFLOW_MCP_TOOLS": "genai",
+        "MLFLOW_EXPERIMENT_ID": "<experiment-id>"
+      }
+    }
+  }
+}
+```
+
+Scope `MLFLOW_MCP_TOOLS` explicitly (`genai` for trace/assessment work, `all` only if ML tracking tools are also needed) rather than leaving it at its default, and set `MLFLOW_EXPERIMENT_ID` so `search_traces`/`get_trace` calls don't need an experiment ID passed on every call. On retrieval calls, use the `extract_fields` parameter (dot notation and wildcards over trace metadata, assessments, spans, tags) to pull just the fields the assistant needs instead of a full trace payload:
+
+```
+search_traces(experiment_id="123", extract_fields=["info.status", "info.tags", "spans.name"])
+```
+
+For evaluation workflows, `log_feedback` and `log_expectation` let the assistant record assessments directly against a trace instead of you doing it manually in the UI.
+
+<Callout type="warn">
+  - **Treating this as production-stable** — it's explicitly experimental; don't build production tooling on top of it without expecting breaking changes.
+  - **Forgetting `MLFLOW_TRACKING_TOKEN`** for a remote or authenticated server — the client fails to connect silently-ish rather than obviously.
+  - **Leaving `MLFLOW_MCP_TOOLS` unscoped** — exposes more tool categories than the assistant actually needs.
+  - **Pulling full trace payloads instead of using `extract_fields`** — wastes context on fields the assistant will never use.
+</Callout>
+
+See [MCP — Debugging & Testing](../mcp/debugging-and-testing) for the general practice of validating an MCP server before relying on it, and [MLflow's MCP server docs](https://mlflow.org/docs/latest/genai/mcp/) for the full tool reference.
+
+## Running tracing in production
+
+Trace logging happens asynchronously by default so it doesn't block your application — controlled by `MLFLOW_ENABLE_ASYNC_TRACE_LOGGING` (on by default for OSS and non-notebook workloads), with `MLFLOW_ASYNC_TRACE_LOGGING_MAX_WORKERS` (default 10), `MLFLOW_ASYNC_TRACE_LOGGING_MAX_QUEUE_SIZE` (default 1000 — traces beyond this are dropped, not queued indefinitely), and `MLFLOW_ASYNC_TRACE_LOGGING_RETRY_TIMEOUT` (default 500s) tuning the background worker pool.
+
+For high-volume services, control trace throughput with `MLFLOW_TRACE_SAMPLING_RATIO` (0.0–1.0, default 1.0 — export everything). Override it per call site with `sampling_ratio_override` on `@mlflow.trace` when one especially noisy or especially important span needs a different rate than the global default.
+
+If your production service only needs to emit traces (not query the tracking server, log models, or run evaluations), install the lightweight `mlflow-tracing` package instead of full `mlflow` — significantly smaller footprint and fewer dependencies. Do not install both in the same environment.
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Relying on autolog alone** — it produces spans, but not the specific span types and attributes the evaluation scorers depend on; the manual conventions above still apply to your own code.
+  - **Forgetting to attach `session_id`/`user`** — without it, multi-turn conversations can't be grouped and per-user analysis isn't possible.
+  - **Leaving `MLFLOW_TRACE_SAMPLING_RATIO` at 1.0** in a high-volume production service without considering the storage/cost tradeoff.
+  - **Installing both `mlflow` and `mlflow-tracing`** in the same environment — pick one based on whether the service needs to do more than emit traces.
+  - **Redacting sensitive fields after the fact instead of via `span_processors`** — by the time a span reaches the backend without a filter applied, the sensitive data has already left your application.
+  - **Relying on tags alone for environment/version tracking** — `app_version`, `deployment_id`, and git context belong in metadata (per the Track application versions step), not as ad-hoc tags, so they line up with MLflow's own auto-captured `mlflow.source.*` fields.
+  - **Logging feedback with the wrong `source_type`** — mislabeling `HUMAN` vs. `CODE` vs. `LLM_JUDGE` skews how evaluation results get interpreted downstream.
+  - **Chasing a `ParentCommand` or `GraphInterrupt` exception event as if it were a bug** — see [Known benign exception events](#known-benign-exception-events); check the span's `status` before investigating further.
+  - **Filtering on trace `state` to find model-backend outages** — a recovered outage still ends `OK` at the trace level; filter on `tags.model_retry_occurred = 'true'` instead (see [Known benign exception events](#known-benign-exception-events)).
+</Callout>
+
+## References
+
+- [MLflow — Tracing overview](https://mlflow.org/docs/latest/genai/tracing)
+- [MLflow — Automatic tracing](https://mlflow.org/docs/latest/genai/tracing/app-instrumentation/automatic/)
+- [MLflow — Manual tracing](https://mlflow.org/docs/latest/genai/tracing/app-instrumentation/manual-tracing/)
+- [MLflow — Track users and sessions](https://mlflow.org/docs/latest/genai/tracing/track-users-sessions/)
+- [MLflow — Token usage and cost](https://mlflow.org/docs/latest/genai/tracing/token-usage-cost/)
+- [MLflow — Attach tags](https://mlflow.org/docs/latest/genai/tracing/attach-tags/)
+- [MLflow — Collect user feedback](https://mlflow.org/docs/latest/genai/assessments/feedback/)
+- [MLflow — Redact sensitive data](https://mlflow.org/docs/latest/genai/tracing/observe-with-traces/masking/)
+- [MLflow — Setting log levels](https://mlflow.org/docs/latest/genai/tracing/app-instrumentation/logging/)
+- [MLflow — Track application versions](https://mlflow.org/docs/latest/genai/tracing/track-environments-context/)
+- [MLflow — Trace observability UI](https://mlflow.org/docs/latest/genai/tracing/observe-with-traces/ui/)
+- [MLflow — Production tracing](https://mlflow.org/docs/latest/genai/tracing/prod-tracing/)

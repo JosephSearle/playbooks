@@ -1,0 +1,110 @@
+---
+title: Build a Client
+description: Embedding MCP client capability into a host application — capability negotiation, tool discovery and invocation, and handling elicitation and change notifications.
+---
+
+Building an MCP client means giving a host application (your AI assistant, IDE plugin, or agent runtime) the ability to connect to any MCP server and use whatever it exposes, without hardcoding assumptions about a specific server's tools ahead of time. Most of the work is capability negotiation and keeping the model's view of available tools in sync — the actual request/response plumbing is handled by an SDK.
+
+<Callout type="info">
+  This doc covers **building a client embedded in a host application**: connecting, negotiating capabilities, discovering and invoking tools, and handling elicitation and notifications. It assumes the vocabulary from [Architecture](./architecture). If you're consuming an already-built server from an existing host (Claude Code, Claude Desktop, VS Code) rather than writing client code, see [Connecting to Servers](./connecting-to-servers) instead.
+</Callout>
+
+## Core concepts
+
+- **One client per server connection** — a host that connects to three servers manages three independent client instances, each with its own discovered capabilities and tool list. Don't design a single client object to multiplex multiple servers; let the host layer aggregate results across clients instead.
+- **Negotiate capabilities before assuming anything is supported** — call `server/discover` (or let the SDK do it on connect) and branch on what comes back rather than assuming every server supports tools, resources, and prompts equally. A server that only exposes resources shouldn't cause a tool-list call to error ungracefully.
+- **Aggregate tool listings into one registry for the model** — the host's job is to combine `tools/list` results from every connected server into a single namespace the LLM can reason about, since the model itself doesn't need to know which physical server backs which tool.
+- **Progressive tool discovery matters at scale** — a host connected to many servers with hundreds of combined tools shouldn't necessarily load and expose all of them to the model on every turn; consider surfacing tools progressively (by relevance, by explicit user selection, or via a meta-tool for search) rather than flooding the model's context with every tool from every server.
+- **Elicitation is a request the client must be able to answer** — when a server calls `elicitation/create` mid-operation, the client (via the host) needs to surface that request to the user and return their response; a client that doesn't support elicitation should declare that clearly in its capabilities so servers don't rely on it.
+- **React to notifications instead of polling** — if a server declares `listChanged` support for a primitive, subscribe and refresh only on the notification, rather than re-listing on a fixed interval regardless of whether anything changed.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Connect and negotiate capabilities
+
+- **Action**: Establish the connection and inspect what the server actually supports before using it.
+  ```python
+  from mcp import ClientSession, StdioServerParameters
+  from mcp.client.stdio import stdio_client
+
+  server_params = StdioServerParameters(command="python", args=["weather_server.py"])
+
+  async with stdio_client(server_params) as (read, write):
+      async with ClientSession(read, write) as session:
+          init_result = await session.initialize()
+          if init_result.capabilities.tools:
+              register_server(session, supports_tools=True)
+  ```
+- **Result**: The host only attempts operations the server actually declared support for, instead of assuming a fixed feature set and failing unpredictably against a more limited server.
+
+</Step>
+<Step>
+
+#### Discover and aggregate tools across servers
+
+- **Action**: List tools from every connected session and merge them into one registry the model sees.
+  ```python
+  available_tools = []
+  for session in active_sessions:
+      result = await session.list_tools()
+      available_tools.extend(result.tools)
+
+  conversation.register_available_tools(available_tools)
+  ```
+- **Result**: The model reasons over one unified tool list regardless of how many servers are actually connected — server boundaries are an implementation detail the host hides.
+
+</Step>
+<Step>
+
+#### Invoke a tool and route the result back
+
+- **Action**: When the model selects a tool, look up which session owns it and call it there.
+  ```python
+  async def handle_tool_call(tool_name: str, arguments: dict):
+      session = find_session_for_tool(tool_name)
+      result = await session.call_tool(tool_name, arguments)
+      conversation.add_tool_result(result.content)
+  ```
+- **Result**: The tool call is routed to the correct server transparently; the model doesn't need to know or care which server ultimately handled it.
+
+</Step>
+<Step>
+
+#### Handle elicitation and stay in sync via notifications
+
+- **Action**: Register a handler for elicitation requests, and subscribe to change notifications for primitives you care about.
+  ```python
+  async def on_elicitation(request):
+      user_response = await host_ui.prompt_user(request.message, request.schema)
+      return user_response
+
+  session.set_elicitation_handler(on_elicitation)
+
+  async with session.listen(tools_list_changed=True) as subscription:
+      async for _event in subscription:
+          updated = await session.list_tools()
+          conversation.update_available_tools(updated.tools)
+  ```
+- **Result**: A server that needs mid-operation user input gets a real answer instead of a hang or an error, and the tool registry stays current as the server's capabilities evolve during a long-running session.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Assuming every server supports every primitive** — always branch on negotiated capabilities rather than hardcoding an expectation.
+  - **Loading every tool from every server into the model's context unconditionally** — at any real scale this degrades the model's ability to pick the right tool; consider progressive discovery.
+  - **No elicitation handler at all** — a client that silently drops elicitation requests breaks any server that relies on them for confirmation flows; either implement one or declare the capability as unsupported.
+  - **Polling tool lists on a timer instead of subscribing** — wastes calls and still risks missing a change between polls; use notifications when the server supports them.
+</Callout>
+
+## References
+
+- [Model Context Protocol — Build an MCP Client](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-client)
+- [Model Context Protocol — Client Best Practices](https://modelcontextprotocol.io/docs/2026-07-28/develop/clients/client-best-practices)
+- [Model Context Protocol — Understanding MCP Clients](https://modelcontextprotocol.io/docs/2026-07-28/learn/client-concepts)
+- [Architecture](./architecture)
+- [Connecting to Servers](./connecting-to-servers)

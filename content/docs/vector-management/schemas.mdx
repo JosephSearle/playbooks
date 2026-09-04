@@ -1,0 +1,103 @@
+---
+title: Schemas
+description: Designing collection schemas — primary keys, vector field types, scalar metadata, and safe schema evolution.
+---
+
+Schema design is the highest-leverage decision in vector management: it determines what queries are efficient, what data is valid, and how expensive it is to change your mind later. Unlike a typical relational schema, a vector collection schema also has to account for the vector field's type and dimensionality, since that choice interacts directly with index selection (see [Indexes](./indexes)).
+
+<Callout type="info">
+  This doc covers **field-level schema design practice**: primary keys, vector types, scalar/JSON/array fields, dynamic fields, and evolving a schema safely. It doesn't cover collection-level operations like loading or partitioning — see [Collections](./collections) — or index tuning — see [Indexes](./indexes).
+</Callout>
+
+## Core concepts
+
+- **Exactly one primary key per collection** — usually an `INT64` or `VARCHAR` field. Prefer a natural, stable external ID (e.g., a document/chunk ID you already generate) over `auto_id`, so upserts and deletes can target a known key instead of requiring a lookup first (see [Ingestion](./ingestion)).
+- **Vector field type follows your embedding model and retrieval need, not the other way around**:
+  - **Dense vectors** (`FLOAT_VECTOR`) — the default for embedding-model output (OpenAI, Cohere, open-weight sentence embedders). Dimensionality is fixed by the model.
+  - **Sparse vectors** (`SPARSE_FLOAT_VECTOR`) — for term-weighted representations like BM25 or learned sparse embeddings; efficient when most dimensions are zero. See [Function & Model Inference](./function-and-model-inference) for generating these server-side.
+  - **Binary vectors** (`BINARY_VECTOR`) — for hashed/binary embeddings (e.g., perceptual hashes); much smaller footprint, coarser similarity.
+- **A collection can have more than one vector field** — this is what enables multi-vector and hybrid search (dense + sparse together), not a separate collection per vector type. See [Search & Filtering](./search-tuning).
+- **Scalar fields are what make filtering possible** — every field you'll ever want to filter or group search results by (tenant ID, timestamp, category, tags) needs to be a real scalar field, not buried inside an opaque blob, or filtering falls back to full scans.
+- **Dynamic fields trade schema safety for flexibility** — enabling `enable_dynamic_field` lets you write arbitrary extra JSON-like key/value data without a migration, at the cost of losing validation and indexing on those fields by default. Use it for genuinely variable metadata, not as a way to avoid schema design.
+- **Nullable and default values reduce write-time coupling** — mark fields nullable or give them defaults when not every writer will have every value at insert time, instead of forcing every row through a placeholder convention.
+- **Schema changes are not all equally cheap** — adding a new nullable/default-valued field to an existing collection is generally supported and cheap; changing an existing field's type or dimensionality is not, and usually means creating a new collection and migrating (see the alias pattern in [Collections](./collections)).
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Choose the primary key and vector field(s)
+
+- **Action**: Pick a stable external primary key type, and match vector field type/dimension to your embedding model.
+  ```python
+  from pymilvus import MilvusClient, DataType
+
+  client = MilvusClient(uri="http://localhost:19530")
+  schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+
+  schema.add_field("chunk_id", DataType.VARCHAR, is_primary=True, max_length=128)
+  schema.add_field("dense_embedding", DataType.FLOAT_VECTOR, dim=1536)   # e.g. text-embedding-3-small
+  schema.add_field("sparse_embedding", DataType.SPARSE_FLOAT_VECTOR)     # e.g. BM25 output
+  ```
+- **Result**: `chunk_id` lets you upsert/delete by a key your application already owns. Two vector fields set up hybrid dense+sparse retrieval later without a second collection.
+
+</Step>
+<Step>
+
+#### Add filterable scalar metadata
+
+- **Action**: Add every field you expect to filter, group, or sort by as a first-class scalar field.
+  ```python
+  schema.add_field("source_doc", DataType.VARCHAR, max_length=256)
+  schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
+  schema.add_field("created_at", DataType.INT64)               # unix timestamp, filters cheaply
+  schema.add_field("tags", DataType.ARRAY, element_type=DataType.VARCHAR, max_capacity=16, max_length=64)
+  schema.add_field("metadata", DataType.JSON, nullable=True)    # genuinely variable extras only
+  ```
+- **Result**: `tenant_id` and `created_at` support efficient filtered search (see [Search & Filtering](./search-tuning)); `metadata` is the escape hatch for the minority of fields that don't deserve their own column, not the default for everything.
+
+</Step>
+<Step>
+
+#### Evolve the schema safely
+
+- **Action**: Add new fields with a default so existing rows remain valid; treat type/dimension changes as a migration.
+  ```python
+  # Safe: additive, backfills existing rows with the default
+  client.add_collection_field(
+      collection_name="documents",
+      field_name="review_status",
+      data_type=DataType.VARCHAR,
+      max_length=32,
+      nullable=True,
+      default_value="unreviewed",
+  )
+  ```
+  For a breaking change (new embedding model, different dimension), create `documents_v2` with the new schema, backfill, then repoint the alias described in [Collections](./collections) — don't try to alter the vector field in place.
+- **Result**: Additive changes ship without downtime or a reindex. Breaking changes go through an explicit, reversible cutover instead of an in-place mutation that has no rollback.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Using `auto_id` for data you'll ever need to upsert** — without a known external key, upserting means query-then-write instead of a direct upsert by key.
+  - **Putting filter-worthy data only inside a JSON/dynamic field** — filtering on unindexed JSON paths is far slower than a real scalar field; promote hot filter fields explicitly.
+  - **Mismatched embedding dimension** — the vector field's `dim` must exactly match your embedding model's output size; a mismatch fails at insert time, not at schema creation time, so catch it in a smoke test before a bulk load.
+  - **Treating dynamic fields as a permanent solution** — fine for a genuinely variable long tail of metadata; if a "dynamic" field turns out to be present on every row, promote it to a real field.
+</Callout>
+
+## References
+
+- [Milvus — Schema Overview](https://milvus.io/docs/schema.md)
+- [Milvus — Primary Field](https://milvus.io/docs/primary-field.md)
+- [Milvus — Dense Vector](https://milvus.io/docs/dense-vector.md)
+- [Milvus — Sparse Vector](https://milvus.io/docs/sparse_vector.md)
+- [Milvus — Binary Vector](https://milvus.io/docs/binary-vector.md)
+- [Milvus — JSON Field Overview](https://milvus.io/docs/json-field-overview.md)
+- [Milvus — Nullable and Default Values](https://milvus.io/docs/nullable-and-default.md)
+- [Milvus — Add Fields to an Existing Collection](https://milvus.io/docs/add-fields-to-an-existing-collection.md)
+- [Collections](./collections)
+- [Indexes](./indexes)
+- [Function & Model Inference](./function-and-model-inference)

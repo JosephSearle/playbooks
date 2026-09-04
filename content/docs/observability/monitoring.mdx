@@ -1,0 +1,99 @@
+---
+title: Monitoring
+description: How quality issues in live production traffic get surfaced through Automatic Issue Detection, AI Issue Discovery, and human review queues.
+---
+
+Once an application is instrumented and evaluated per [Tracing](./tracing) and [Evals](./evals), monitoring is how quality issues in live production traffic actually get surfaced — automatically against a continuous stream of traces, on demand from a coding agent, and through structured human review.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server, with traces already flowing ([Tracing](./tracing)). It covers three distinct, complementary mechanisms — don't conflate them: **Automatic Issue Detection** is a continuous, UI-driven detector with a persistent issue lifecycle; **AI Issue Discovery** is an on-demand, coding-agent-driven tool that produces a one-shot report; **Review Queues** is the human triage layer that ties back into both.
+</Callout>
+
+## Core concepts
+
+The **CLEARS** framework organizes what Automatic Issue Detection looks for:
+
+| Category | What it catches |
+|---|---|
+| **C**orrectness | Hallucinations, factual errors, ungrounded responses |
+| **L**atency | Slow responses, timeouts, performance bottlenecks |
+| **E**xecution | Tool call failures, API errors, execution problems |
+| **A**dherence | Instruction-following failures, formatting/policy violations |
+| **R**elevance | Output doesn't actually address the user's request |
+| **S**afety | Harmful, sensitive, or inappropriate content |
+
+- **Automatic Issue Detection** — runs from the MLflow UI against a set of selected traces, on a persistent Pending → Resolved/Rejected lifecycle.
+- **AI Issue Discovery** — runs from a coding agent (Claude Code, Cursor, Windsurf) via MCP or CLI, hypothesis-driven, producing a static markdown report rather than a tracked issue list.
+- **Review Queues** — the human-in-the-loop layer: traces get flagged for review, reviewers answer structured questions, and answers write straight onto the trace as feedback or ground-truth expectations.
+
+## Working the monitoring loop
+
+<Steps>
+<Step>
+
+#### Configure and run Automatic Issue Detection
+
+- **Action**: Select the traces to analyze, pick which CLEARS categories to run, and choose the LLM to use — an existing MLflow AI Gateway endpoint, or a direct provider connection (OpenAI, Anthropic, Gemini, etc.) with an API key.
+- **Result**: The run executes asynchronously with live progress (traces scanned, issues found so far). Under the hood it identifies issues per category, combines rationales with human feedback and execution logic to triage them, clusters related issues via LLM-based labeling, and annotates the affected traces with root-cause summaries.
+
+</Step>
+<Step>
+
+#### Work an issue through its lifecycle
+
+- **Action**: Review newly surfaced issues in the **Pending** state; fix and verify real ones, dismiss false positives.
+- **Result**: Confirmed fixes move to **Resolved**; false positives or non-issues move to **Rejected**. Descriptions and severity are editable at any point, so the issue list stays an accurate, actionable backlog rather than a one-time report.
+
+</Step>
+<Step>
+
+#### Run AI Issue Discovery from a coding agent
+
+- **Action**: From an MCP-configured coding agent, run `/analyze-experiment`; from the CLI, run `mlflow ai-commands run genai/analyze_experiment`.
+- **Result**: Produces a markdown report with four sections — quantitative metrics (success rates, latency stats, error distributions), issue analysis (confirmed problems with trace examples and root causes), strengths (effective patterns worth preserving), and prioritized recommendations. Unlike Automatic Issue Detection, this is a one-shot artifact, not a tracked, stateful issue list — read it, act on it, and re-run it later for a fresh snapshot.
+
+</Step>
+<Step>
+
+#### Flag traces for human review
+
+- **Action**: From the trace table or an individual trace, select traces, click **Flag for review**, and assign one or more reviewers — or attach them to a manually created custom queue.
+- **Result**: Reviewers work through well-defined, comparable questions per trace — Pass/Fail, categorical, numeric, or free text — with the trace's input/output in the main pane and the questions in a side panel. The first reviewer to complete a trace clears it for everyone, recorded via `completed_by`, so review effort isn't duplicated.
+
+</Step>
+<Step>
+
+#### Close the loop
+
+- **Action**: Treat review-queue answers as first-class evaluation input, not a side artifact.
+- **Result**: Each answer writes straight onto the reviewed trace — a feedback-type question logs feedback, an expectation-type question logs ground truth — attributed to the reviewer, with no separate export step. That data is immediately usable for building or refining the evaluation datasets and judge calibration covered in [Evals](./evals).
+
+</Step>
+</Steps>
+
+## Planning for cost
+
+Automatic Issue Detection's own benchmark data (402 verified traces, dated 2026-04-16) gives a concrete planning anchor:
+
+| Traces analyzed | Typical cost | Issues found |
+|---|---|---|
+| 50 | $0.08–$0.42 | 5–9 |
+| 100 | $0.11–$0.53 | 8–13 |
+| 250 | $0.16–$0.93 | 10–22 |
+
+Model choice matters more than volume: analyzing 100 traces cost $0.30 with GPT-5.4 versus $0.11 with Gemini-3.1-Pro for the same run. Run detection through the MLflow AI Gateway and use its built-in budget controls to cap spend across detection runs, rather than pointing directly at a provider API key with no ceiling.
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Conflating Automatic Issue Detection with AI Issue Discovery** — one is a continuous detector with a persistent lifecycle, the other is a one-shot agent-triggered report; they answer different questions.
+  - **Running detection against unbounded trace volume without an AI Gateway budget cap** — cost scales with both trace count and model choice, per the table above.
+  - **Leaving issues in `Pending` indefinitely** instead of working them to `Resolved`/`Rejected` — an unworked Pending queue isn't monitoring, it's just noise.
+  - **Writing free-text-only review questions** — Pass/Fail, categorical, or numeric questions are what makes results comparable and aggregatable across reviewers; free text alone isn't.
+  - **Treating review queues as separate from evaluation** — review answers write directly onto traces as feedback/expectations and feed `Evals`' datasets with no export step; don't build a parallel process to move that data manually.
+</Callout>
+
+## References
+
+- [MLflow — Automatic Issue Detection](https://mlflow.org/docs/latest/genai/eval-monitor/ai-insights/detect-issues/)
+- [MLflow — AI Issue Discovery](https://mlflow.org/docs/latest/genai/eval-monitor/ai-insights/ai-issue-discovery/)
+- [MLflow — Review Queues](https://mlflow.org/docs/latest/genai/assessments/review-queues/)

@@ -1,0 +1,109 @@
+---
+title: Collections
+description: Creating, configuring, and operating collections — the primary unit of storage and querying in a vector database.
+---
+
+A collection is the working unit of a vector database: a named table-like structure with a fixed schema (see [Schemas](./schemas)) that holds your vectors and their associated metadata, and that you load, index, and query against. Getting collection-level decisions right — consistency level, partitioning, lifecycle — has more day-to-day operational impact than any single index parameter.
+
+<Callout type="info">
+  This doc covers **creating and operating collections**: creation, loading, consistency tuning, partitions, aliases, TTL, and dropping. Field-level schema design is its own doc — see [Schemas](./schemas) — and inserting data is covered in [Ingestion](./ingestion).
+</Callout>
+
+## Core concepts
+
+- **Schema-first creation** — define fields and types up front (primary key, vector field(s), scalar metadata) rather than relying on fully dynamic/schemaless collections. A fixed schema lets the database validate writes and build better indexes; dynamic fields are for a controlled amount of variability, not a substitute for a schema.
+- **Load vs. release** — a collection's data and index must be loaded into memory (or a queryable tier) before it can be searched. Loading is a distinct, explicit step from creation, so you can create and populate a collection without paying memory cost until it's actually needed.
+- **Consistency level is a per-collection (or per-query) tradeoff** — vector databases are typically eventually consistent by default for throughput; you can request stronger consistency (e.g., read-your-writes) at the cost of latency. Pick the weakest level that's still correct for the use case.
+- **Partitions subdivide a collection** — a partition is a named subset of one collection sharing its schema, useful for scoping queries to a known slice of data (e.g., by tenant or date) without the overhead of a separate collection. See [Databases](./database) for how this compares to database-level isolation.
+- **Aliases decouple the collection name a client uses from the collection actually serving it** — this is what makes zero-downtime reindexing/reload possible: build a new collection, then repoint the alias.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Define the schema and create the collection
+
+- **Action**: Build an explicit schema and create the collection from it (schema design detail lives in [Schemas](./schemas)).
+  ```python
+  from pymilvus import MilvusClient, DataType
+
+  client = MilvusClient(uri="http://localhost:19530")
+
+  schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+  schema.add_field("id", DataType.VARCHAR, is_primary=True, max_length=64)
+  schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=1536)
+  schema.add_field("source", DataType.VARCHAR, max_length=256)
+
+  client.create_collection(collection_name="documents", schema=schema)
+  ```
+- **Result**: `documents` exists with a validated shape. No index or load has happened yet — the collection isn't queryable until both are done (next step).
+
+</Step>
+<Step>
+
+#### Index and load
+
+- **Action**: Build a vector index (see [Indexes](./indexes) for choosing parameters) and load the collection into memory.
+  ```python
+  index_params = client.prepare_index_params()
+  index_params.add_index(field_name="embedding", index_type="HNSW", metric_type="COSINE")
+  client.create_index("documents", index_params)
+
+  client.load_collection("documents")
+  ```
+- **Result**: `documents` is now searchable. Release it (`client.release_collection("documents")`) when it's not actively serving queries to free memory — this is a normal operational lever, not just a teardown step.
+
+</Step>
+<Step>
+
+#### Tune consistency for the read pattern
+
+- **Action**: Set consistency per query based on how fresh the read needs to be relative to the last write.
+  ```python
+  # Strong: read-your-writes, higher latency — use right after an ingest job
+  client.search("documents", data=[query_vec], consistency_level="Strong", limit=5)
+
+  # Bounded/eventually consistent: lower latency — use for steady-state serving traffic
+  client.search("documents", data=[query_vec], consistency_level="Bounded", limit=5)
+  ```
+- **Result**: Ingest-then-immediately-query paths (e.g., a test suite, or a "your document is now searchable" UX) get correctness; high-QPS serving paths get throughput. Using `Strong` everywhere by default is a common source of unnecessary latency.
+
+</Step>
+<Step>
+
+#### Use partitions and aliases for operational flexibility
+
+- **Action**: Partition by a known query dimension, and front the collection with an alias.
+  ```python
+  client.create_partition("documents", partition_name="tenant_acme")
+  client.insert("documents", data=rows, partition_name="tenant_acme")
+  client.search("documents", data=[query_vec], partition_names=["tenant_acme"], limit=5)
+
+  client.create_alias("documents", alias="documents_prod")
+  # later, to cut over to a rebuilt collection with zero client-side changes:
+  client.alter_alias("documents_v2", alias="documents_prod")
+  ```
+- **Result**: Queries scoped to a partition skip scanning irrelevant data. Clients always talk to `documents_prod`; swapping which physical collection it points to enables blue/green reindexing without a client deploy.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Querying a collection that was never loaded, or was released and not reloaded** — fails or returns stale results depending on the client; make load state part of your deployment checklist, not an assumption.
+  - **Defaulting to `Strong` consistency everywhere** — quietly caps throughput; reserve it for paths that actually need read-your-writes.
+  - **Using partitions as a substitute for schema design** — a partition per unrelated data shape belongs in a separate collection instead; partitions are for subsetting data that already shares one schema.
+  - **No TTL on collections that should expire** — for time-bound data (sessions, logs), set a TTL at creation rather than building a separate cleanup job.
+</Callout>
+
+## References
+
+- [Milvus — Manage Collections](https://milvus.io/docs/manage-collections.md)
+- [Milvus — Load and Release](https://milvus.io/docs/load-and-release.md)
+- [Milvus — Tune Consistency](https://milvus.io/docs/tune_consistency.md)
+- [Milvus — Manage Partitions](https://milvus.io/docs/manage-partitions.md)
+- [Milvus — Manage Aliases](https://milvus.io/docs/manage-aliases.md)
+- [Schemas](./schemas)
+- [Databases](./database)
+- [Indexes](./indexes)

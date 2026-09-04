@@ -1,0 +1,109 @@
+---
+title: Batch Orchestration
+description: Scheduled, DAG-based sync pipelines — fetch, chunk, embed, upsert — for sources without a native change feed or where near-real-time freshness isn't required.
+---
+
+Not every source can stream changes, and not every use case needs them to. Batch orchestration runs a sync pipeline on a schedule instead — fetch the current state of a source, determine what's new or changed, and push updates through chunking and embedding into the vector store. It's the simpler, more broadly applicable pattern precisely because it doesn't depend on the source exposing anything beyond "give me the current data."
+
+<Callout type="info">
+  This doc covers **scheduled/batch sync**, using DAG-based orchestration as the reference pattern. For sources with a native change feed and a near-real-time requirement, see [Change Data Capture](./change-data-capture) instead. Either way, avoiding redundant re-embedding and handling deletions correctly is covered separately in [Incremental Sync & Deduplication](./incremental-sync-and-dedup) — a batch pipeline without that layer just re-processes everything on every run.
+</Callout>
+
+## Core concepts
+
+- **A DAG makes the pipeline's dependencies and failure points explicit** — fetch → chunk → embed → upsert is naturally a sequence of dependent steps; expressing it as a DAG (Airflow is the common reference tool) rather than one monolithic script gives you per-step retries, per-step observability, and the ability to re-run only a failed stage instead of the whole pipeline.
+- **Task idempotency is what makes retries safe** — every task in the DAG should be safe to re-run with the same input and produce the same result (an upsert by stable ID, not an insert that would duplicate on retry). Without this, a retry after a partial failure can leave the vector store inconsistent.
+- **Backfill and incremental-window runs are different operations, not the same DAG run at different times** — a backfill processes all historical data once; a steady-state run processes only what changed since the last successful run. Design the DAG to support both explicitly (a date/version-range parameter) rather than assuming a single "run everything" mode covers both cases efficiently.
+- **Batch is the right default when a source has no change feed, or the freshness requirement is measured in hours-to-days** — polling-only sources structurally require batch (or a batch-shaped incremental diff); even sources that could support CDC may not be worth the added infrastructure if hourly or daily freshness is genuinely sufficient (see [Choosing a Sync Strategy](./choosing-a-sync-strategy)).
+- **Batching embedding calls is a real cost lever** — most embedding APIs charge per call or benefit from batched requests; a batch pipeline naturally accumulates a window of changed documents and can embed them in one batched call, something a naively-implemented streaming consumer processing one event at a time doesn't get for free.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Structure the DAG around the pipeline's real stages
+
+- **Action**: Define discrete, independently retriable tasks rather than one large function.
+  ```python
+  from airflow import DAG
+  from airflow.operators.python import PythonOperator
+  from datetime import datetime, timedelta
+
+  with DAG(
+      dag_id="sync_docs_to_vector_store",
+      schedule="@hourly",
+      start_date=datetime(2026, 1, 1),
+      catchup=False,
+      default_args={"retries": 3, "retry_delay": timedelta(minutes=5)},
+  ) as dag:
+      fetch = PythonOperator(task_id="fetch_changed_documents", python_callable=fetch_changed)
+      chunk = PythonOperator(task_id="chunk_documents", python_callable=chunk_documents)
+      embed = PythonOperator(task_id="embed_chunks", python_callable=embed_chunks)
+      upsert = PythonOperator(task_id="upsert_to_vector_store", python_callable=upsert_chunks)
+
+      fetch >> chunk >> embed >> upsert
+  ```
+- **Result**: A failure in `embed_chunks` retries just that task (and anything downstream), not the whole pipeline from `fetch` — and each stage's output is independently inspectable when something goes wrong.
+
+</Step>
+<Step>
+
+#### Fetch only what changed since the last successful run
+
+- **Action**: Track a watermark (last successful run's timestamp, or a source-specific cursor like a commit SHA) and scope the fetch to it.
+  ```python
+  def fetch_changed(**context):
+      last_run = get_last_successful_watermark(dag_id="sync_docs_to_vector_store")
+      changed_docs = source_client.list_changed_since(last_run)
+      context["ti"].xcom_push(key="changed_docs", value=changed_docs)
+      set_watermark(dag_id="sync_docs_to_vector_store", value=now())
+  ```
+- **Result**: Steady-state runs process only the incremental window, keeping cost and runtime proportional to actual change volume rather than total source size — critical once the source is large enough that a full re-fetch every run is wasteful or slow.
+
+</Step>
+<Step>
+
+#### Make the upsert task idempotent
+
+- **Action**: Upsert by the source's stable identifier, never insert-with-new-id.
+  ```python
+  def upsert_chunks(**context):
+      chunks = context["ti"].xcom_pull(key="embedded_chunks")
+      collection.upsert([
+          {"id": c["stable_chunk_id"], "embedding": c["embedding"], "content": c["content"]}
+          for c in chunks
+      ])
+  ```
+- **Result**: If this task retries after a partial failure (some chunks written, then a crash), re-running it produces the same end state rather than duplicate entries — the same idempotency principle from [Ingestion](../vector-management/ingestion), applied at the pipeline level.
+
+</Step>
+<Step>
+
+#### Support backfill as an explicit, separate mode
+
+- **Action**: Parameterize the DAG so a backfill run can be triggered deliberately with a wide date range, distinct from the normal incremental schedule.
+  ```bash
+  airflow dags backfill sync_docs_to_vector_store \
+    --start-date 2020-01-01 --end-date 2026-01-01
+  ```
+- **Result**: A backfill is a conscious, bounded operation you trigger when needed (a new source added, a schema change requiring re-processing) — not something that accidentally happens because the incremental-window logic was wrong.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Non-idempotent tasks** — an insert-only upsert path turns every retry into duplicate data; always upsert by stable ID.
+  - **No watermark tracking** — without one, every run either re-processes everything (expensive) or risks missing data processed between an ill-defined "since" boundary.
+  - **One monolithic task instead of a DAG** — makes partial failures expensive to recover from and hides which stage actually failed.
+  - **Confusing a backfill with the steady-state schedule** — running a full backfill on the same schedule as incremental syncs wastes cost and risks overwhelming the embedding API's rate limits.
+</Callout>
+
+## References
+
+- [Orchestration & Operationalization for Large-Scale RAG — Airflow/Kubeflow](https://apxml.com/courses/large-scale-distributed-rag/chapter-5-orchestration-operationalization-large-scale-rag/rag-workflow-orchestration-airflow-kubeflow)
+- [Orchestrating RAG Pipelines with Apache Airflow](https://opendatascience.com/orchestrating-rag-pipelines-with-apache-airflow/)
+- [Choosing a Sync Strategy](./choosing-a-sync-strategy)
+- [Incremental Sync & Deduplication](./incremental-sync-and-dedup)
+- [Ingestion](../vector-management/ingestion)

@@ -1,0 +1,86 @@
+---
+title: Snapshots
+description: Backing up and restoring collections for disaster recovery, environment cloning, and safe migration.
+---
+
+A vector collection represents significant, often expensive-to-reproduce work — embeddings can take real compute time and money to regenerate, and the scalar metadata alongside them may not exist anywhere else. Snapshots make that state recoverable, independent of whatever cleanup, migration, or infrastructure change you're about to attempt.
+
+<Callout type="info">
+  This doc covers **backup and restore practice** for collections. It pairs with the alias-based cutover pattern in [Collections](./collections) for zero-downtime migrations, and with the schema evolution guidance in [Schemas](./schemas) for breaking changes.
+</Callout>
+
+## Core concepts
+
+- **A snapshot captures a collection's data and schema at a point in time**, independent of ongoing writes — restoring it recreates the collection as it existed at capture time, not as it exists now.
+- **Snapshots are the safety net for anything hard to reverse** — a schema migration, a bulk delete, a reindex, or an upgrade of the database itself. Take one immediately before any operation you can't easily undo, not only on a routine schedule.
+- **Three practical use cases justify most snapshot usage**: disaster recovery (restore after data loss or corruption), environment cloning (stand up a realistic staging/dev copy without regenerating embeddings), and safe migration (snapshot before a breaking schema change, so a bad migration can be rolled back).
+- **A restore target is usually a new collection, not necessarily an in-place overwrite** — this lets you validate a restored snapshot (row counts, spot-check queries) before deciding whether to cut traffic over to it, using the same alias-swap pattern as a schema migration ([Collections](./collections)).
+- **Snapshots are not a substitute for a retention/versioning strategy on your source data** — they capture the vector database's state, not the documents or pipeline that produced it; keep both recoverable independently.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Snapshot before any hard-to-reverse operation
+
+- **Action**: Take a snapshot immediately before a schema migration, bulk delete, or version upgrade — as a required step in that runbook, not an afterthought.
+  ```python
+  from pymilvus import MilvusClient
+
+  client = MilvusClient(uri="http://localhost:19530")
+  client.create_snapshot(collection_name="documents", snapshot_name="documents_pre_migration_2026_09_04")
+  ```
+- **Result**: If the migration goes wrong, you have a known-good point to restore from rather than reconstructing the collection from source data and re-embedding, which may not even be fully reproducible if the embedding model has since changed.
+
+</Step>
+<Step>
+
+#### Restore into a new collection and validate before cutover
+
+- **Action**: Restore to a distinct collection name, verify it, then repoint the alias that clients actually use.
+  ```python
+  client.restore_snapshot(snapshot_name="documents_pre_migration_2026_09_04", collection_name="documents_restored")
+
+  # validate
+  count = client.get_collection_stats("documents_restored")["row_count"]
+  assert count == expected_row_count
+
+  # only then cut traffic over
+  client.alter_alias("documents_restored", alias="documents_prod")
+  ```
+- **Result**: A restore that turns out incomplete or corrupted is caught before it's serving traffic, using the same alias-based cutover already established in [Collections](./collections) — no client-facing downtime either way.
+
+</Step>
+<Step>
+
+#### Clone a realistic environment without re-embedding
+
+- **Action**: Restore a production snapshot into a staging environment to test against real data volume and distribution.
+  ```python
+  client.restore_snapshot(
+      snapshot_name="documents_prod_weekly",
+      collection_name="documents_staging",
+      target_cluster="staging",
+  )
+  ```
+- **Result**: Staging gets a realistic dataset for load-testing an index change or a query pattern, without paying to regenerate embeddings or waiting for staging's own ingestion to catch up to production scale.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **No snapshot before a schema migration or bulk delete** — the single most common regret; make it a mandatory runbook step, not a judgment call in the moment.
+  - **Restoring directly over the production collection** — restore to a new name and validate first; an in-place restore that turns out wrong has no fallback.
+  - **Treating snapshots as a source-data backup** — they capture the vector database's state only; the documents/pipeline that produced the embeddings need their own retention story.
+  - **Never testing a restore** — a snapshot you've never restored is an assumption, not a safety net; periodically verify restores actually work end-to-end.
+</Callout>
+
+## References
+
+- [Milvus — Snapshots](https://milvus.io/docs/snapshots.md)
+- [Milvus — Manage Snapshots](https://milvus.io/docs/manage-snapshots.md)
+- [Milvus — Snapshot Use Cases](https://milvus.io/docs/snapshot-use-cases.md)
+- [Collections](./collections)
+- [Schemas](./schemas)

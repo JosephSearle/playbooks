@@ -1,0 +1,66 @@
+---
+title: Overview
+description: How the team instruments, evaluates, and monitors LLM application behavior — tracing, evaluation, production monitoring, and prompt lifecycle management — using MLflow as the underlying tool.
+---
+
+This section covers observability for LLM applications: how to instrument execution as structured traces, evaluate quality against built-in and custom judges, monitor production traffic for issues, and manage prompts through a versioned lifecycle. We use MLflow to implement all of this — it's the tool, not the topic.
+
+## What's in this section
+
+- **[Tracing](./tracing)** — span instrumentation conventions the server and its evaluation scorers depend on, plus optionally hooking an AI coding assistant up to query and manage traces directly via [MCP](../mcp/overview).
+- **[Experiments](./experiments)** — logging runs and evaluating traces with MLflow's GenAI scorers.
+- **[Evals](./evals)** — the evaluation framework in depth: built-in vs. custom judges, reusable evaluation datasets, and CI regression gates.
+- **[Monitoring](./monitoring)** — production monitoring: automatic issue detection, agent-driven issue discovery, and human review queues.
+- **[Prompts](./prompts)** — the Prompt Registry: versioning, aliasing, evaluation, and optimization.
+- **[AI Gateway](./ai-gateway)** — a unified, governed interface in front of LLM providers: connections, endpoints, traffic routing/fallbacks, usage tracking, budgets, and guardrails.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Tracing
+
+Instrument your code with the span conventions the server and its evaluation scorers depend on. See [Tracing](./tracing) — including an optional section on hooking an AI coding assistant up to query and manage traces directly via MCP.
+
+</Step>
+<Step>
+
+#### Experiments
+
+Log runs and evaluate traces with MLflow's GenAI scorers — this builds directly on the RETRIEVER span schema and trace IDs from Tracing. See [Experiments](./experiments).
+
+</Step>
+<Step>
+
+#### Evals
+
+Go deeper on evaluation itself — built-in vs. custom judges, reusable evaluation datasets, and CI regression gates. See [Evals](./evals).
+
+</Step>
+<Step>
+
+#### Monitoring
+
+Take that evaluation signal into production: automatic issue detection, agent-driven issue discovery, and human review queues. See [Monitoring](./monitoring).
+
+</Step>
+<Step>
+
+#### Prompts
+
+Close the loop — use eval and monitoring signal to version, alias, and optimize prompts. See [Prompts](./prompts).
+
+</Step>
+<Step>
+
+#### AI Gateway
+
+Govern how every provider call actually reaches an LLM: credentials, traffic routing, budgets, and guardrails. See [AI Gateway](./ai-gateway).
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  Tracing has to come before Experiments in this order, not the other way around — evaluation scorers like `RetrievalGroundedness` and `RetrievalRelevance` depend on the RETRIEVER span schema from Tracing, and expectations are logged against a `trace_id` that only exists once tracing is in place. As with the rest of this documentation, this order is a suggestion, not a requirement: a developer already comfortable with MLflow can skip straight to Tracing or Experiments.
+</Callout>

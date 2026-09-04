@@ -1,0 +1,60 @@
+---
+title: Overview
+description: Keeping a vector database current against changing external sources — GitHub repos, bucket storage, databases — as a distinct problem from one-time ingestion.
+---
+
+Populating a vector collection once is the easy part; keeping it correct as the source data keeps changing is where most real systems actually struggle. A GitHub repo gets new commits, a storage bucket gets new or updated objects, a database table gets rows inserted, updated, and deleted — and every one of those changes needs to eventually show up (or be removed) in your vector store, without re-embedding everything from scratch on every run and without accumulating stale or duplicate entries over time. Data synchronization is the practice of solving that continuously, not the one-time load covered in [Ingestion](../vector-management/ingestion).
+
+<Callout type="info">
+  This section assumes you already have a collection and schema to sync into — see [Collections](../vector-management/collections) and [Schemas](../vector-management/schemas) if not — and covers the pipeline that keeps it current against external sources. It doesn't cover the insert/upsert/delete API mechanics themselves; see [Ingestion](../vector-management/ingestion) for that.
+</Callout>
+
+## What's in this section
+
+- **[Choosing a Sync Strategy](./choosing-a-sync-strategy)** — the decision framework: what a source's own change signals and your latency requirement actually determine, before picking a pattern.
+- **[Change Data Capture](./change-data-capture)** — event-driven sync: streaming change events from a source as they happen, instead of periodically checking for them.
+- **[Batch Orchestration](./batch-orchestration)** — scheduled, DAG-based sync: fetch → chunk → embed → upsert pipelines that run on an interval.
+- **[Incremental Sync & Deduplication](./incremental-sync-and-dedup)** — the record-keeping layer that makes either pattern actually correct: knowing what's already synced, detecting real changes, and propagating deletions.
+- **[Managed ETL & ELT](./managed-etl-and-elt)** — when a managed platform is worth the dependency versus building the pipeline yourself.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Choosing a Sync Strategy
+
+Start here regardless of source type — what your source can tell you about its own changes (events, a changelog, or nothing) determines which pattern actually fits, before you invest in building one. See [Choosing a Sync Strategy](./choosing-a-sync-strategy).
+
+</Step>
+<Step>
+
+#### Change Data Capture or Batch Orchestration
+
+Follow whichever pattern the decision framework pointed you at. [Change Data Capture](./change-data-capture) covers event-driven sync for sources with native change feeds; [Batch Orchestration](./batch-orchestration) covers scheduled pipelines for sources without one, or where near-real-time freshness isn't required.
+
+</Step>
+<Step>
+
+#### Incremental Sync & Deduplication
+
+Regardless of which pattern feeds it, this is the layer that keeps sync actually correct over time — read it once and apply it to whichever pipeline you built. See [Incremental Sync & Deduplication](./incremental-sync-and-dedup).
+
+</Step>
+<Step>
+
+#### Managed ETL & ELT
+
+Before committing to a fully custom pipeline, weigh it against a managed platform that may already solve the connector and orchestration parts of the problem. See [Managed ETL & ELT](./managed-etl-and-elt).
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  This reading order is a suggestion, not a requirement. A developer who already knows their source only supports polling can skip straight to [Batch Orchestration](./batch-orchestration); one evaluating a managed platform first can start at [Managed ETL & ELT](./managed-etl-and-elt) instead.
+</Callout>
+
+## References
+
+- [Ingestion](../vector-management/ingestion)
+- [Collections](../vector-management/collections)

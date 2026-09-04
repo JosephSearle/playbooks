@@ -1,0 +1,48 @@
+---
+title: Overview
+description: How the team stores and retrieves content for LLM-grounded answers, from the underlying vector store through retrieval-augmented generation patterns.
+---
+
+This section covers how the team stores and retrieves content for LLM-grounded answers — from standing up the underlying vector store through the retrieval-augmented generation patterns built on top of it.
+
+## What's in this section
+
+- **[Vector Management](../vector-management/database)** — the vector database itself: databases, collections, schema design, and indexing for FAQ, Documentation, and Code content.
+- **[RAG](./adoption-strategy)** — the patterns for retrieving from those collections and generating grounded answers, from a simple fixed pipeline up through self-correcting and agentic variants, plus a decision guide for which pattern to reach for.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Vector Management — Databases & Collections
+
+Stand up a database namespace and create a collection to work against. See [Databases](../vector-management/database) and [Collections](../vector-management/collections).
+
+</Step>
+<Step>
+
+#### Vector Management — Schemas
+
+Learn the schema and index patterns for FAQ, Documentation, and Code collections. See [Schemas](../vector-management/schemas).
+
+</Step>
+<Step>
+
+#### RAG — Adoption Strategy
+
+Before touching any specific pattern, understand the decision framework for which one actually fits a given problem. See [Adoption Strategy](./adoption-strategy).
+
+</Step>
+<Step>
+
+#### RAG — the pattern series
+
+Work through [Basic RAG](./basic-rag) through [Adaptive RAG](./adaptive-rag) in order — each pattern builds on assumptions established by the ones before it, as cross-linked throughout the series.
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  This reading order is a suggestion, not a requirement. A developer already familiar with vector databases can skip straight to the RAG section, and the [Adoption Strategy](./adoption-strategy) doc is designed to be revisited whenever picking a pattern for a new use case — not just read once linearly.
+</Callout>

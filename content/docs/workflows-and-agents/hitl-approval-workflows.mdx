@@ -1,0 +1,88 @@
+---
+title: Human-in-the-Loop Approval Workflows
+description: How to pause agent execution for human review before a sensitive tool call runs, including the checkpointer prerequisite and the four decision types.
+---
+
+Per [LangChain's human-in-the-loop docs](https://docs.langchain.com/oss/python/langchain/human-in-the-loop): when a model proposes an action that might require review — writing to a file, executing SQL — middleware can pause execution and wait for a decision, checking each tool call against a configurable policy. This is a control layer that sits on top of any of the agent patterns already in this series, not a replacement for them — a [ReAct Agent](./react-agent) or [Supervisor](./supervisor) topology can both be wrapped with an approval gate on their sensitive tools.
+
+<Callout type="warn">
+  **Non-negotiable prerequisite: HITL requires a checkpointer.** Human review doesn't happen instantaneously — the agent's state has to be persisted across the pause. Without a checkpointer configured, state is lost during the delay between the interrupt firing and the human's decision arriving. Confirm this is wired up before anything else below.
+</Callout>
+
+## Core concepts
+
+- **Four decision types** — approve as-is, edit before running, reject with feedback, or respond directly (for "ask user" style tools where the human is acting as the tool itself).
+- **Bundled approvals are order-dependent** — when several tool calls are paused at once, each requires a separate decision, and decisions must be provided in the same order the actions appear in the interrupt request.
+- **`respond` is not a rejection mechanism** — it's for cases where the human is acting as the tool (e.g. answering an `ask_user` prompt). Using it to deny a side-effecting tool is a misuse: its message is treated as a successful tool result, not a denial.
+- **Prebuilt middleware vs. raw primitive** — `HumanInTheLoopMiddleware` covers policy-driven, per-tool approval out of the box. For HITL logic it doesn't cover, LangGraph's lower-level [`interrupt()`](https://docs.copilotkit.ai/langgraph-python/human-in-the-loop/interrupt-flow) is the primitive the middleware itself is built on.
+
+## Implementing an approval gate
+
+<Steps>
+<Step>
+
+#### Configure a checkpointer
+
+- **Action**: Wire up a checkpointer before adding any interrupt logic — this is what persists state across the pause.
+- **Result**: The agent's state survives however long the human takes to review, instead of being lost between the interrupt firing and the decision arriving.
+
+</Step>
+<Step>
+
+#### Attach `HumanInTheLoopMiddleware` with a per-tool policy
+
+- **Action**: Configure which tools require approval — typically anything with a side effect (file writes, SQL execution, sending messages), left untouched for read-only tools.
+- **Result**: The model can still call read-only tools freely; only the tools in the policy pause execution and wait on a human decision.
+
+</Step>
+<Step>
+
+#### Handle the interrupt
+
+- **Action**: When execution pauses, resolve each paused tool call with one of approve / edit / reject / respond — in the same order the actions appear in the interrupt request.
+- **Result**: Multiple simultaneous tool calls each get resolved individually rather than as a single bulk decision, and the middleware can correctly match each decision back to its originating call.
+
+</Step>
+<Step>
+
+#### Edit conservatively
+
+- **Action**: When choosing to edit rather than approve or reject, keep changes to tool arguments minimal.
+- **Result**: Avoids the gotcha this doc's primary source flags directly — significant modifications to the original arguments may cause the model to re-evaluate its approach and potentially execute the tool multiple times or take unexpected actions. A conservative edit resolves the immediate concern without triggering that re-evaluation.
+
+</Step>
+<Step>
+
+#### Drop to raw `interrupt()` for cases outside the policy shape
+
+- **Action**: For custom HITL logic the prebuilt middleware doesn't cover, call LangGraph's `interrupt()` directly inside a node.
+- **Result**: Execution pauses mid-node for user input, same as the middleware — but note the tradeoff: the agent itself isn't aware the interruption happened unless you explicitly surface that back into state yourself.
+
+</Step>
+</Steps>
+
+## Tracking whether the policy is actually well-tuned
+
+Per a practical field guide on running this in production, three metrics tell you whether an interrupt policy is earning its keep, rather than just adding latency:
+
+- **Which tools get interrupted most frequently** — a tool at the top of this list is a candidate for either better upfront validation or a genuinely higher-risk operation.
+- **Which decision type is most common per tool** — a tool with a high rejection rate suggests the tool's arguments need better validation upfront, not just a human backstop catching bad calls after the fact.
+- **How long the approval step takes** — this is the direct cost side of the tradeoff; a policy that's slow with a low rejection rate is likely gating the wrong tools.
+
+<Callout type="info">
+  **Cross-provider note.** HITL-as-a-named-middleware is currently more mature on the LangChain/LangGraph side than as a standardized primitive elsewhere. The OpenAI Agents SDK's guardrails (see [Swarm / Handoffs](./swarm-handoffs)) are a related but distinct concept — automated input/output policy checks, not human-approval pauses. This is a real, current asymmetry across frameworks, similar to the tooling gap already noted in [Network / Mesh](./network-mesh) — not an oversight on either side.
+</Callout>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **No checkpointer configured** — state is lost during the pause, not just delayed.
+  - **Large edits to tool arguments** — can cause the model to re-evaluate its approach and re-execute unexpectedly, instead of simply proceeding with the corrected call.
+  - **Using `respond` to deny a side-effecting tool** — the message is treated as a successful result, not a rejection; use `reject` instead.
+  - **Ignoring response order on bundled approvals** — decisions must match the order actions appear in the interrupt request.
+  - **Treating guardrails as a HITL substitute** — automated policy checks and human-approval pauses solve different problems.
+</Callout>
+
+## References
+
+- [LangChain — Human-in-the-loop](https://docs.langchain.com/oss/python/langchain/human-in-the-loop)
+- [CopilotKit — LangGraph interrupt flow](https://docs.copilotkit.ai/langgraph-python/human-in-the-loop/interrupt-flow)

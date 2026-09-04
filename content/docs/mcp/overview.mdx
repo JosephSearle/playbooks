@@ -1,0 +1,57 @@
+---
+title: Overview
+description: How AI applications connect to external tools, data, and workflows through the Model Context Protocol — a vendor-neutral standard rather than a bespoke integration per provider.
+---
+
+Every LLM-backed application eventually needs to reach outside the model: read a file, query a database, call an API, run a calculation. Before a shared standard existed, each application invented its own way to describe and invoke that outside functionality — meaning a tool built for one AI application couldn't be reused by another without a rewrite. The Model Context Protocol (MCP) is the standard that fixes this: a single, well-specified way for an AI application to discover and use tools, data, and prompt templates exposed by any MCP-compliant server, regardless of which vendor built either side.
+
+## What's in this section
+
+- **[Architecture](./architecture)** — the client-host-server model, the data/transport layer split, and the primitives (tools, resources, prompts, elicitation) that make up the protocol's teachable surface.
+- **[Build a Server](./build-server)** — exposing your own tools, resources, and prompts to any MCP-compatible client.
+- **[Build a Client](./build-client)** — embedding MCP client capability into a host application so it can consume any MCP server.
+- **[Connecting to Servers](./connecting-to-servers)** — the operational side: local (stdio) vs. remote (Streamable HTTP) server configuration and connection lifecycle.
+- **[Authorization & Security](./authorization-and-security)** — OAuth-based authorization for remote servers, and treating server-supplied content as untrusted input.
+- **[Debugging & Testing](./debugging-and-testing)** — using the MCP Inspector and other practices to validate a server before wiring it into a real host.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Architecture
+
+Understand the client-server model and core primitives before building anything — every other doc in this section assumes this vocabulary. See [Architecture](./architecture).
+
+</Step>
+<Step>
+
+#### Build a Server or Build a Client
+
+Pick the side you're actually building. Most developers start with [Build a Server](./build-server) — exposing existing internal tools/data to AI applications is the more common entry point than building a new host. [Build a Client](./build-client) covers the other side, for anyone embedding MCP support into an application.
+
+</Step>
+<Step>
+
+#### Connecting to Servers
+
+Once a server exists, [Connecting to Servers](./connecting-to-servers) covers wiring it into a real host — local process-based connections during development, remote HTTP connections in production.
+
+</Step>
+<Step>
+
+#### Authorization & Security, then Debugging & Testing
+
+Before shipping anything beyond a local prototype, read [Authorization & Security](./authorization-and-security) — remote servers need real auth, and every server needs to treat its inputs as untrusted regardless of transport. [Debugging & Testing](./debugging-and-testing) closes the loop with how to validate a server in isolation using the MCP Inspector.
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  This reading order is a suggestion, not a requirement. A developer who already has a working server and just needs to harden it can skip straight to [Authorization & Security](./authorization-and-security); one who only needs to consume an existing server can skip building entirely and go straight to [Connecting to Servers](./connecting-to-servers).
+</Callout>
+
+## References
+
+- [Model Context Protocol — What is MCP?](https://modelcontextprotocol.io/docs/2026-07-28/getting-started/intro)
+- [Model Context Protocol — Architecture Overview](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture)

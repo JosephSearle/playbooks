@@ -1,0 +1,71 @@
+---
+title: Choosing a Sync Strategy
+description: What a source's own change signals and your freshness requirement actually determine — event-driven, batch, or managed ELT — before building a pipeline.
+---
+
+The temptation is to pick a sync pattern based on what sounds most sophisticated (streaming beats batch, surely) rather than what the source and the use case actually require. In practice, two questions settle it almost every time: what change signal does the source expose, and how fresh does the vector store actually need to be. Everything else — which tool, how much infrastructure — follows from those answers.
+
+<Callout type="info">
+  This doc is a **decision framework**, not an implementation guide. Once you've picked a direction, see [Change Data Capture](./change-data-capture), [Batch Orchestration](./batch-orchestration), or [Managed ETL & ELT](./managed-etl-and-elt) for the how.
+</Callout>
+
+## Core concepts
+
+- **The source's native change signal is the real constraint, not preference** — a source that emits events (webhooks, a changelog, a write-ahead log) can support event-driven sync cheaply; a source that only supports listing/polling cannot, no matter how appealing streaming sounds. Don't build a CDC pipeline in front of a source that can't actually tell you what changed without a full scan.
+- **Freshness requirement sets the ceiling on acceptable latency, not the floor** — "as fresh as possible" is rarely the real requirement; a support-ticket search index needing minute-level freshness and a quarterly compliance-document archive needing daily freshness call for very different amounts of infrastructure investment. Match the pattern to the actual requirement, not the most impressive one.
+- **Cost scales with sync frequency and source volatility, not just data volume** — re-embedding unchanged content on every batch run, or maintaining an always-on streaming pipeline for a source that changes twice a day, both waste money in different directions. See [Incremental Sync & Deduplication](./incremental-sync-and-dedup) for the mechanism that avoids the batch-side version of this.
+- **The three target source types split differently on change signal**:
+  - **GitHub repos** expose commit-level change signals natively — webhooks on push events, and every commit carries a SHA and a diff. This suits event-driven sync (react to push events) or incremental diffing (compare against the last-synced commit SHA) far better than periodic full re-clones.
+  - **Bucket storage** varies by provider — some (e.g., S3) support event notifications on object create/update/delete; others require polling a listing and diffing against previously seen ETags or last-modified timestamps. Confirm which capability your bucket provider actually offers before assuming event-driven is available.
+  - **Databases** split on whether the engine exposes log-based CDC (logical replication in Postgres, binlog in MySQL) versus requiring a polling query against an `updated_at`/`version` column. Log-based CDC captures deletes and exact change ordering; polling a timestamp column typically can't see deletes at all without additional bookkeeping (a tombstone table or soft-delete flag).
+- **Managed ELT trades control for reduced operational surface** — worth evaluating before building a custom pipeline, especially for common source types with existing connectors; see [Managed ETL & ELT](./managed-etl-and-elt) for the tradeoff in full.
+
+## Working through the decision
+
+<Steps>
+<Step>
+
+#### Identify the source's native change signal
+
+- **Action**: For each source, determine concretely what it can tell you about changes: an event/webhook, a change log with ordering guarantees, or nothing beyond a snapshot you'd have to diff yourself.
+- **Result**: This alone rules out options — a source with no changelog and no events cannot cheaply support CDC; a source with rich commit history (like a Git repo) is being underused if you only ever do full re-syncs.
+
+</Step>
+<Step>
+
+#### State the actual freshness requirement, in minutes/hours/days
+
+- **Action**: Get a concrete number from whoever owns the use case, not a vague "as real-time as possible." A support search tool might genuinely need sub-minute freshness; an internal knowledge base might be fine with a nightly sync.
+- **Result**: A number you can check candidate patterns against, rather than defaulting to the most complex option out of caution.
+
+</Step>
+<Step>
+
+#### Match signal and freshness to a pattern
+
+- **Action**: Apply the decision table below.
+  | Change signal | Freshness need | Pattern |
+  |---|---|---|
+  | Events/webhooks or log-based CDC available | Near-real-time (seconds-minutes) | [Change Data Capture](./change-data-capture) |
+  | Events/CDC available | Hours is fine | Batch is simpler and still sufficient — CDC's complexity isn't justified by the requirement |
+  | Polling/snapshot only | Any | [Batch Orchestration](./batch-orchestration) — there's no cheaper option without a native change signal |
+  | Common source type, connector-covered need | Hours-to-daily, standard transform | [Managed ETL & ELT](./managed-etl-and-elt) — evaluate before building |
+- **Result**: A pattern chosen from actual constraints, not from which one is most interesting to build.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Building CDC in front of a polling-only source** — there's no changelog to stream; you'd just be re-inventing polling with extra infrastructure in between.
+  - **Choosing streaming because the requirement is unclear, not because it's needed** — get a real freshness number before committing to the more complex pattern.
+  - **Assuming every bucket provider supports event notifications** — verify this specifically; the fallback (listing + diff) is a meaningfully different, more expensive pattern.
+  - **Polling a database's `updated_at` column and assuming deletes are covered** — they usually aren't; a deleted row simply disappears from the poll results with no signal, which requires separate handling (see [Incremental Sync & Deduplication](./incremental-sync-and-dedup)).
+</Callout>
+
+## References
+
+- [Change Data Capture](./change-data-capture)
+- [Batch Orchestration](./batch-orchestration)
+- [Incremental Sync & Deduplication](./incremental-sync-and-dedup)
+- [Managed ETL & ELT](./managed-etl-and-elt)

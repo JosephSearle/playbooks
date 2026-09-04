@@ -1,0 +1,105 @@
+---
+title: Build a Server
+description: Exposing tools, resources, and prompts through an MCP server — transport choice, schema design, and the discovery/execution contract clients rely on.
+---
+
+An MCP server is the side that actually does something: it wraps existing functionality — an API, a database, a filesystem, a calculation — in the tool/resource/prompt primitives described in [Architecture](./architecture), so that any MCP-compatible client can discover and use it without custom integration code. Building one well is mostly a schema-design and naming discipline problem, not a hard engineering problem — the SDKs handle the JSON-RPC plumbing.
+
+<Callout type="info">
+  This doc covers **building a server**: transport choice, tool/resource/prompt design, and the discovery/execution contract. It assumes the vocabulary from [Architecture](./architecture). Wiring a finished server into a host application is covered in [Connecting to Servers](./connecting-to-servers); securing one is covered in [Authorization & Security](./authorization-and-security).
+</Callout>
+
+## Core concepts
+
+- **Pick a transport based on who connects, not convenience** — stdio for a server meant to run as a local subprocess of one host (fast, no network overhead, no auth needed since the OS process boundary is the security boundary); Streamable HTTP for a server meant to be reachable by multiple clients or over a network (requires real authorization — see [Authorization & Security](./authorization-and-security)).
+- **Tool names are part of your public API** — use a clear, namespaced pattern (`weather_current`, not `get`), since the name is what the AI model actually reasons about when deciding which tool to call. A vague name forces the model to lean entirely on the description, which is a weaker signal.
+- **Descriptions are read by a model, not a human skimming docs** — write them to disambiguate from similar tools and state clearly when to use the tool, not just what it technically does. This is the single highest-leverage piece of a tool definition for getting it invoked correctly.
+- **Input schemas double as validation and documentation** — a JSON Schema `inputSchema` on each tool lets the client validate arguments before calling, and gives the model structured information about required vs. optional parameters, types, and enums — don't accept a loose free-text argument when a structured schema is possible.
+- **Resources are for data, tools are for actions** — if a capability just returns information (a file's contents, a schema, a record) with no side effect, expose it as a resource, not a tool; this lets clients distinguish "safe to read anytime" from "has effects, use deliberately."
+- **Prompts are reusable templates, not a way to avoid writing a real tool** — use them for structured interaction patterns (a few-shot example set, a standard system prompt for a task) that a client can surface as a starting point, not as a substitute for exposing real functionality via tools/resources.
+- **List responses should be dynamic, not just complete at startup** — if the underlying data changes (a new tool becomes available, a resource is added), advertise that via the `listChanged` capability and a notification rather than requiring a server restart for clients to notice.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Choose a transport and scaffold the server
+
+- **Action**: Start with stdio for local development and single-host use; move to Streamable HTTP once multiple clients or remote access is a real requirement.
+  ```python
+  from mcp.server.fastmcp import FastMCP
+
+  mcp = FastMCP("weather-server")
+
+  if __name__ == "__main__":
+      mcp.run(transport="stdio")  # switch to "streamable-http" for remote/multi-client
+  ```
+- **Result**: A minimal server process that a host can launch and connect a client to. No tools are exposed yet — this is just the transport and process shell.
+
+</Step>
+<Step>
+
+#### Define a tool with a clear name, description, and schema
+
+- **Action**: Expose one action with a namespaced name and a schema the model can reason about.
+  ```python
+  from pydantic import BaseModel, Field
+
+  class WeatherArgs(BaseModel):
+      location: str = Field(description="City name, address, or coordinates (latitude,longitude)")
+      units: str = Field(default="metric", description="Temperature units: metric, imperial, or kelvin")
+
+  @mcp.tool(name="weather_current", description="Get current weather information for any location worldwide")
+  def weather_current(args: WeatherArgs) -> str:
+      data = fetch_weather(args.location, args.units)
+      return f"Current weather in {args.location}: {data.summary}"
+  ```
+- **Result**: `tools/list` now returns `weather_current` with a structured input schema derived from `WeatherArgs`; a client can validate arguments client-side before ever calling `tools/call`.
+
+</Step>
+<Step>
+
+#### Expose read-only context as a resource
+
+- **Action**: For data the client might want to read without triggering an action, use a resource instead of a tool.
+  ```python
+  @mcp.resource("weather://stations/{station_id}")
+  def station_metadata(station_id: str) -> str:
+      return get_station_info(station_id)
+  ```
+- **Result**: Clients can list and read station metadata (`resources/list`, `resources/read`) as passive context, distinct from the `weather_current` tool's active behavior — a client UI can safely surface resources for browsing without implying an action will be taken.
+
+</Step>
+<Step>
+
+#### Advertise changes instead of requiring a restart
+
+- **Action**: When the set of available tools changes at runtime (e.g., feature-flagged tools, a plugin system), declare the `listChanged` capability and emit a notification instead of expecting clients to re-discover blindly.
+  ```python
+  mcp.capabilities.tools.list_changed = True
+  # ... when the tool set changes ...
+  await mcp.notify_tools_list_changed()
+  ```
+- **Result**: Subscribed clients receive `notifications/tools/list_changed` and refresh their tool registry automatically, keeping long-running host sessions accurate without a reconnect.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Vague tool names and descriptions** — `get_data` or "Gets data" gives the model almost nothing to reason about; be specific about what the tool does and when to use it, especially when multiple similar tools exist.
+  - **Using a tool where a resource fits better** — if there's no side effect, prefer a resource; it signals safety to both the client and the model.
+  - **Accepting free-text where a structured schema is possible** — a real `inputSchema` with types and enums beats parsing a loose string argument inside the tool implementation.
+  - **Treating incoming tool arguments as trusted** — a server should validate and sanitize arguments the same as any other external input; see [Authorization & Security](./authorization-and-security) for the broader trust model.
+  - **Static tool lists for genuinely dynamic capability sets** — declare `listChanged` and notify rather than forcing clients to restart their connection to see new functionality.
+</Callout>
+
+## References
+
+- [Model Context Protocol — Build an MCP Server](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-server)
+- [Model Context Protocol — Understanding MCP Servers](https://modelcontextprotocol.io/docs/2026-07-28/learn/server-concepts)
+- [Model Context Protocol — SDKs](https://modelcontextprotocol.io/docs/2026-07-28/sdk)
+- [Architecture](./architecture)
+- [Connecting to Servers](./connecting-to-servers)
+- [Authorization & Security](./authorization-and-security)

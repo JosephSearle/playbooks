@@ -1,0 +1,83 @@
+---
+title: Debugging & Testing
+description: Validating an MCP server in isolation with the MCP Inspector before wiring it into a real host, and logging conventions now that server-side logging is deprecated.
+---
+
+Debugging a server through a full host application adds a layer of indirection — you're reasoning about the host's tool-selection behavior, the model's choices, and your server's actual behavior all at once. Testing the server in isolation first removes two of those three variables, and is almost always the faster path to finding a real bug.
+
+<Callout type="info">
+  This doc covers **testing a server standalone** with the MCP Inspector, and **logging conventions** for a running server. It assumes a server already exists — see [Build a Server](./build-server) — and pairs with [Authorization & Security](./authorization-and-security) for testing auth flows specifically.
+</Callout>
+
+## Core concepts
+
+- **The MCP Inspector is a standalone client built for testing, not production use** — it connects to your server the same way a real host would (stdio or Streamable HTTP), but gives you direct, manual control over discovery and invocation instead of going through a model's tool-selection logic. Available as a web UI, a CLI, and a TUI, depending on whether you want visual inspection or scriptable/headless testing.
+- **Test discovery before testing execution** — confirm `tools/list`, `resources/list`, and `prompts/list` return what you expect (correct names, complete schemas, sensible descriptions) before worrying about whether individual calls behave correctly; a malformed schema is a different bug class than a broken implementation.
+- **Test execution with both valid and deliberately invalid arguments** — a tool that only gets exercised with well-formed input during development will surprise you in production; confirm it fails predictably (a clear error) rather than unpredictably (a crash, a silent wrong answer) on bad input.
+- **Server-side logging goes to stderr or OpenTelemetry, not the deprecated logging primitive** — as of protocol version `2026-07-28`, the client-facing logging primitive is deprecated (see [Architecture](./architecture)); write operational logs to stderr on stdio transport, or emit OpenTelemetry spans/logs for anything you want centrally observable, rather than relying on the old protocol-level channel.
+- **CLI/scriptable testing belongs in CI, the web/TUI Inspector belongs in exploratory debugging** — once you've manually verified a server's behavior interactively, script the same checks with the Inspector's CLI mode so regressions are caught automatically rather than only ever being caught by hand.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Launch the Inspector against your server
+
+- **Action**: Point the Inspector at your server the same way a host would.
+  ```bash
+  npx @modelcontextprotocol/inspector python weather_server.py
+  ```
+- **Result**: A local web UI opens, connected to your server via stdio, showing its declared capabilities and letting you browse tools, resources, and prompts interactively — no host application or LLM involved yet.
+
+</Step>
+<Step>
+
+#### Verify discovery output before touching execution
+
+- **Action**: In the Inspector, open the Tools tab and check each tool's name, description, and input schema render as intended.
+- **Result**: Catches schema and description problems (a missing required field, a description too vague to disambiguate from a similar tool) before they show up as confusing model behavior once the server is wired into a real host.
+
+</Step>
+<Step>
+
+#### Exercise execution with valid and invalid arguments
+
+- **Action**: Call a tool through the Inspector with correct arguments, then again with intentionally bad ones (wrong type, missing required field, an out-of-range value).
+  ```
+  weather_current({"location": "San Francisco", "units": "imperial"})   # valid
+  weather_current({"location": "", "units": "kelvin"})                  # edge case
+  weather_current({"units": "imperial"})                                # missing required field
+  ```
+- **Result**: Confirms the server returns a clear, structured error for bad input instead of crashing or silently returning a misleading result — the same discipline you'd apply to testing any API.
+
+</Step>
+<Step>
+
+#### Script the same checks for CI
+
+- **Action**: Once behavior is verified interactively, capture the same cases with the Inspector's CLI mode so they run automatically.
+  ```bash
+  npx @modelcontextprotocol/inspector --cli python weather_server.py \
+    --method tools/call --tool-name weather_current \
+    --tool-arg location="San Francisco" --tool-arg units=imperial
+  ```
+- **Result**: A regression in tool behavior gets caught in CI rather than being discovered later through confusing downstream model behavior in a real host session.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Only ever testing through a real host application** — adds model tool-selection behavior as a confounding variable; test the server in isolation first with the Inspector.
+  - **Only testing the happy path** — a tool that's never been called with bad input will fail unpredictably the first time it happens in production; test invalid arguments deliberately.
+  - **Relying on the deprecated logging primitive for operational visibility** — use stderr (stdio) or OpenTelemetry instead, per [Architecture](./architecture).
+  - **No automated regression coverage** — interactive Inspector testing catches bugs once; scripting the same checks with the CLI mode catches them every time.
+</Callout>
+
+## References
+
+- [Model Context Protocol — MCP Inspector](https://modelcontextprotocol.io/docs/2026-07-28/tools/inspector)
+- [Model Context Protocol — Debugging](https://modelcontextprotocol.io/docs/2026-07-28/tools/debugging)
+- [Architecture](./architecture)
+- [Build a Server](./build-server)

@@ -1,0 +1,166 @@
+---
+title: Experiments
+description: Structured experiment tracking for comparing model iterations, prompt changes, and retrieval configurations over time, evaluated with MLflow's built-in GenAI scorers.
+---
+
+Comparing model iterations, prompt changes, and retrieval configurations over time requires structured experiment tracking — logging what changed, what you measured, and how to reproduce it, rather than relying on memory or spreadsheets. We use MLflow's experiment tracking for this: every run logs the parameters you tuned, the metrics you care about, and any artifacts (model weights, evaluation datasets, output samples).
+
+This runbook walks through logging a run, evaluating it with MLflow's GenAI scorers, and comparing runs against your MLflow tracking server.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server.
+</Callout>
+
+## Core concepts
+
+| Concept | What it is |
+|---|---|
+| **Experiment** | A named group of related runs (e.g. `"rag-retrieval-tuning"`) |
+| **Run** | A single execution within an experiment — captures params, metrics, artifacts |
+| **Parameter** | A configuration value that doesn't change during the run (model name, chunk size, temperature) |
+| **Metric** | A numeric value that can be logged at each step (loss, latency, accuracy, relevance score) |
+| **Artifact** | Any file associated with the run (model checkpoint, evaluation output, prompt template) |
+
+## Logging and evaluating a run
+
+<Steps>
+<Step>
+
+#### Log a run
+
+- **Action**: Point MLflow at your experiment, then log parameters, metrics, and artifacts inside a run.
+  ```python
+  import mlflow
+
+  mlflow.set_tracking_uri("http://localhost:5000")
+  mlflow.set_experiment("rag-retrieval-tuning")
+
+  with mlflow.start_run(run_name="chunk-size-512"):
+      # Log configuration
+      mlflow.log_param("chunk_size", 512)
+      mlflow.log_param("overlap", 64)
+      mlflow.log_param("retriever_model", "text-embedding-3-large")
+      mlflow.log_param("llm", "claude-sonnet-4-6")
+
+      # Run your pipeline
+      results = run_rag_pipeline(chunk_size=512, overlap=64)
+
+      # Log outcome metrics
+      mlflow.log_metric("mean_relevance_score", results["mean_relevance"])
+      mlflow.log_metric("p90_latency_ms", results["p90_latency"])
+      mlflow.log_metric("answer_correctness", results["correctness"])
+
+      # Optionally save output files as artifacts
+      mlflow.log_artifact("eval_output.json")
+  ```
+- **Result**: A new run appears under the `rag-retrieval-tuning` experiment in the MLflow UI, with its params, metrics, and artifacts attached.
+
+</Step>
+<Step>
+
+#### Log expectations (ground truth)
+
+- **Action**: Evaluation scorers need ground truth to assess quality — log expectations against the run's trace before running evaluation.
+  ```python
+  from mlflow.tracking import MlflowClient
+
+  client = MlflowClient(tracking_uri="http://localhost:5000")
+
+  # Log expected facts for correctness scoring
+  client.log_expectation(
+      trace_id="<trace_id>",
+      key="expected_facts",
+      value=["The capital of France is Paris.", "Paris has a population of ~2.1 million."],
+  )
+
+  # Log expected documents for retrieval sufficiency scoring
+  client.log_expectation(
+      trace_id="<trace_id>",
+      key="expected_documents",
+      value=["s3://docs/france-overview.pdf#chunk_3"],
+  )
+  ```
+- **Result**: The trace now carries the ground truth scorers like `Correctness()` and `RetrievalSufficiency()` need to compare against.
+
+</Step>
+<Step>
+
+#### Run GenAI evaluation
+
+- **Action**: Score a set of traces with MLflow's built-in judges.
+  ```python
+  import mlflow
+  from mlflow.genai.scorers import (
+      Correctness,
+      RelevanceToQuery,
+      RetrievalGroundedness,
+      RetrievalRelevance,
+      Safety,
+  )
+
+  mlflow.set_tracking_uri("http://localhost:5000")
+  mlflow.set_experiment("rag-eval")
+
+  # Select the traces you want to evaluate using MLflow filter DSL
+  eval_results = mlflow.genai.evaluate(
+      data=mlflow.search_traces(
+          experiment_names=["rag-retrieval-tuning"],
+          filter_string="status = 'OK'",
+          max_results=100,
+      ),
+      scorers=[
+          RelevanceToQuery(),          # no ground truth required
+          RetrievalGroundedness(),     # requires RETRIEVER span (see Tracing)
+          RetrievalRelevance(),        # requires RETRIEVER span
+          Correctness(),               # requires expected_facts or expected_response
+          Safety(),                    # no requirements
+      ],
+  )
+
+  print(eval_results.metrics)
+  ```
+- **Result**: `eval_results` is logged as its own MLflow Run, with per-scorer metrics you can inspect or compare against other runs.
+
+  **Scorer selection matrix:**
+
+  | Scorer | Requirements |
+  |---|---|
+  | `Correctness()` | `expected_facts` or `expected_response` logged on the trace |
+  | `RelevanceToQuery()` | None |
+  | `RetrievalGroundedness()` | RETRIEVER span with correct output schema |
+  | `RetrievalRelevance()` | RETRIEVER span with correct output schema |
+  | `RetrievalSufficiency()` | RETRIEVER span + `expected_documents` |
+  | `Safety()` | None |
+  | `Guidelines(name=, guidelines=)` | None — define your own rubric |
+
+  RETRIEVER spans must follow the [output schema documented in Tracing](./tracing#instrument-retriever-spans) for these scorers to work.
+
+</Step>
+<Step>
+
+#### Compare runs
+
+- **Action**: Compare runs either in the UI or programmatically.
+  ```python
+  import mlflow
+  import pandas as pd
+
+  mlflow.set_tracking_uri("http://localhost:5000")
+
+  runs = mlflow.search_runs(
+      experiment_names=["rag-retrieval-tuning"],
+      order_by=["metrics.mean_relevance_score DESC"],
+  )
+
+  # Compare key metrics across runs
+  comparison = runs[["run_id", "params.chunk_size", "metrics.mean_relevance_score", "metrics.p90_latency_ms"]]
+  print(comparison.to_string(index=False))
+  ```
+- **Result**: In the UI, navigate to your experiment at [http://localhost:5000](http://localhost:5000), select two or more runs, and click **Compare** — MLflow renders a metric diff table and parallel-coordinate plot. Programmatically, `comparison` gives you the same data as a DataFrame you can filter, sort, or export.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  A production MLflow server should use a PostgreSQL backend, required for the full feature set: evaluation dataset CRUD (`mlflow.genai.datasets`), `search_runs()` with complex filters, and concurrent write safety. The legacy FileStore (`mlruns/` directory) is deprecated and does not support evaluation datasets or reliable concurrent writes — always point your client at a properly backed server rather than a local FileStore.
+</Callout>

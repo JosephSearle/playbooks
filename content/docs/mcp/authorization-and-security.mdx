@@ -1,0 +1,96 @@
+---
+title: Authorization & Security
+description: OAuth-based authorization for remote MCP servers, and treating tool inputs, descriptions, and outputs as untrusted content regardless of transport.
+---
+
+MCP connects an AI application to functionality that can read data and take action — which means it inherits two distinct risk categories: who's allowed to connect at all (authorization), and what a connected, authorized server can still do wrong or be tricked into doing (security). Getting the first right without the second is a common trap: a properly authenticated remote server can still return malicious tool descriptions or poisoned output content that manipulates the model.
+
+<Callout type="info">
+  This doc covers **authorization for remote servers** and **security practices that apply regardless of transport**. It assumes the local-vs-remote distinction from [Connecting to Servers](./connecting-to-servers) and the tool/resource model from [Build a Server](./build-server).
+</Callout>
+
+## Core concepts
+
+- **Local stdio servers rely on the OS process boundary, not protocol-level auth** — since the host launches the server directly, there's no separate authorization handshake; the security question shifts to "what can this process do with the host user's permissions," not "who's allowed to connect."
+- **Remote servers use OAuth, not ad hoc API keys, as the recommended pattern** — a client obtains a bearer token through a standard OAuth flow (including discovery of the server's authorization server) rather than a server inventing its own credential scheme. This lets a single client reuse standard OAuth tooling across any compliant server instead of custom-integrating per server.
+- **Authentication proves identity; it says nothing about what a tool's description or output actually contains** — a legitimately authenticated server is still an external, potentially compromised or malicious data source from the model's perspective. Auth and content-trust are separate problems.
+- **Treat tool descriptions and resource content as untrusted input to the model** — a malicious or compromised server can craft a tool description or a resource's returned content to try to manipulate the model into taking unintended actions (a prompt-injection vector specific to agentic tool use). Don't assume a server's own metadata is safe just because the connection is authenticated.
+- **Scope credentials to what a tool genuinely needs** — a tool that only reads should hold read-scoped credentials, not the same broad token used by a tool that writes; this limits blast radius if a tool is ever tricked into misuse.
+- **Validate and sanitize tool arguments server-side, even from a "trusted" client** — the client's own input validation (from a JSON Schema) is a UX convenience, not a security boundary; a server should still validate arguments itself rather than assuming the client already did.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Authenticate a remote server connection with OAuth
+
+- **Action**: Let the client discover the server's authorization server and obtain a scoped token, rather than hardcoding a static API key.
+  ```python
+  from mcp.client.auth import OAuthClientProvider
+
+  auth_provider = OAuthClientProvider(
+      server_url="https://mcp.internal.example.com/",
+      scopes=["tools:read", "tools:execute"],
+  )
+  # SDK handles the discovery + authorization code flow, returning a scoped token
+  ```
+- **Result**: The client obtains a token scoped to only what it actually needs (`tools:read`/`tools:execute`), rather than a broad, long-lived credential — and the flow is the same shape across any OAuth-compliant MCP server.
+
+</Step>
+<Step>
+
+#### Scope credentials per tool, not per server
+
+- **Action**: When a server wraps multiple underlying systems or permission levels, back different tools with different scoped credentials internally.
+  ```python
+  @mcp.tool(name="issues_read")
+  def issues_read(issue_id: str) -> str:
+      return issue_tracker_client(token=READ_ONLY_TOKEN).get(issue_id)
+
+  @mcp.tool(name="issues_close")
+  def issues_close(issue_id: str) -> str:
+      return issue_tracker_client(token=WRITE_TOKEN).close(issue_id)
+  ```
+- **Result**: If `issues_read` is ever invoked unexpectedly (a misfired call, a manipulated argument), it can't cause a write — the blast radius is bounded by which credential that specific tool holds.
+
+</Step>
+<Step>
+
+#### Validate arguments server-side regardless of client-side schema checks
+
+- **Action**: Re-validate inputs inside the tool implementation rather than trusting that a schema-conformant call is automatically safe.
+  ```python
+  @mcp.tool(name="run_query")
+  def run_query(table: str, filters: dict) -> str:
+      if table not in ALLOWED_TABLES:
+          raise ValueError(f"table must be one of {ALLOWED_TABLES}")
+      return execute_scoped_query(table, filters)
+  ```
+- **Result**: Even a client that skipped or was tricked into bypassing its own input validation can't get the server to act outside its intended bounds.
+
+</Step>
+<Step>
+
+#### Treat returned content as data, not instructions
+
+- **Action**: When designing how tool/resource output gets surfaced back into the model's context, keep it clearly demarcated as data rather than letting it blend indistinguishably with the system or user turn.
+- **Result**: Reduces (though doesn't eliminate) the risk that content returned from an external server — especially one you don't fully control — is interpreted by the model as a new instruction rather than as information to reason about. Treat this the same way you'd treat any other untrusted external content reaching the model.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Long-lived, unscoped API keys for remote servers** — prefer OAuth with narrow scopes over a single static credential that grants everything.
+  - **Trusting a tool description or resource content because the server is authenticated** — authentication and content-trust are separate; treat server-supplied text as untrusted the same way you'd treat any external input reaching the model.
+  - **Skipping server-side validation because the client already validated against the schema** — client-side validation is a UX aid, not a security control.
+  - **One shared credential across every tool on a server** — scope credentials per tool/operation so a single misused tool can't act with more privilege than it needs.
+</Callout>
+
+## References
+
+- [Model Context Protocol — Understanding Authorization in MCP](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/authorization)
+- [Model Context Protocol — Security Best Practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
+- [Connecting to Servers](./connecting-to-servers)
+- [Build a Server](./build-server)

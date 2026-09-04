@@ -1,0 +1,106 @@
+---
+title: Search & Filtering
+description: Filtered, hybrid, and multi-vector search patterns, filter expression syntax, and partition-scoped querying.
+---
+
+Vector similarity search rarely runs alone in production — almost every real query also filters by metadata, and a growing number combine multiple vector fields or lexical signals. This doc covers the query-time patterns on top of a collection that already has a schema ([Schemas](./schemas)) and index ([Indexes](./indexes)) in place.
+
+<Callout type="info">
+  This doc covers **query-time search and filtering patterns**. It doesn't cover choosing an index type — see [Indexes](./indexes) — or generating embeddings/rerank scores — see [Function & Model Inference](./function-and-model-inference).
+</Callout>
+
+## Core concepts
+
+- **Filtered search combines a scalar filter with vector similarity in one call** — the engine narrows to matching rows before or during the similarity computation, rather than searching everything and filtering client-side. This only performs well if the filtered field is indexed (see [Indexes](./indexes)).
+- **Filter expressions look like a query language, not raw SQL** — comparison, boolean logic, `in`, string pattern matching, and JSON/array-path access are all typically supported; keep expressions as simple as the use case allows, since complex expressions are harder for the query planner to optimize.
+- **Multi-vector / hybrid search fuses results across more than one vector field** — e.g., a dense semantic field and a sparse BM25 field on the same rows (from [Schemas](./schemas)), searched separately and combined with a ranker (see [Function & Model Inference](./function-and-model-inference) for ranker options like RRF and weighted fusion). This is different from a single dense-only search and generally outperforms it on keyword-sensitive queries.
+- **Full-text/keyword search is a first-class query type, not just a sparse-vector workaround** — useful when a query needs exact term or phrase matching alongside semantic similarity.
+- **Partition-scoped search is a performance optimization, not a correctness feature** — pass `partition_names` (see [Collections](./collections)) when the query already knows which partition holds the relevant data, to skip scanning the rest of the collection.
+- **Iterators exist for pulling large result sets** — a single `search`/`query` call is bounded by a result limit; use a query/search iterator when you genuinely need to page through thousands of matches rather than raising `limit` arbitrarily high.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Filtered vector search
+
+- **Action**: Combine a scalar filter expression with the vector search call.
+  ```python
+  from pymilvus import MilvusClient
+
+  client = MilvusClient(uri="http://localhost:19530")
+
+  results = client.search(
+      collection_name="documents",
+      data=[query_vec],
+      anns_field="dense_embedding",
+      filter='tenant_id == "acme" and created_at > 1704067200',
+      limit=10,
+  )
+  ```
+- **Result**: Only rows matching the filter are candidates for the similarity ranking — correct multi-tenant isolation and recency scoping in one call, not a client-side post-filter.
+
+</Step>
+<Step>
+
+#### Hybrid search across dense and sparse fields
+
+- **Action**: Search each vector field separately, then fuse with a ranker.
+  ```python
+  from pymilvus import AnnSearchRequest, RRFRanker
+
+  dense_req = AnnSearchRequest(data=[query_vec], anns_field="dense_embedding", param={}, limit=20)
+  sparse_req = AnnSearchRequest(data=[query_sparse_vec], anns_field="sparse_embedding", param={}, limit=20)
+
+  results = client.hybrid_search(
+      collection_name="documents",
+      reqs=[dense_req, sparse_req],
+      ranker=RRFRanker(k=60),
+      limit=10,
+  )
+  ```
+- **Result**: Results benefit from both semantic similarity (dense) and exact term matches (sparse) — hybrid search reliably beats dense-only on queries containing rare terms, IDs, or exact phrases that embeddings tend to smooth over. See [Function & Model Inference](./function-and-model-inference) for other rankers (weighted, boost, decay).
+
+</Step>
+<Step>
+
+#### Scope to a known partition and page with an iterator
+
+- **Action**: Narrow to a partition when the query already knows the relevant slice, and use an iterator for large result sets instead of a huge `limit`.
+  ```python
+  client.search(
+      collection_name="documents", data=[query_vec], anns_field="dense_embedding",
+      partition_names=["tenant_acme"], limit=10,
+  )
+
+  iterator = client.search_iterator(
+      collection_name="documents", data=[query_vec], anns_field="dense_embedding", batch_size=200,
+  )
+  for batch in iterator:
+      process(batch)
+  ```
+- **Result**: The partitioned search only scans `tenant_acme`'s data. The iterator streams thousands of results in manageable batches without a single oversized call.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Filtering client-side after an unfiltered search** — always push the filter into the search call; client-side filtering wastes the extra candidates you had to fetch and can under-return relevant results if the true matches fall outside the original `limit`.
+  - **Complex filter expressions on unindexed scalar fields** — check [Indexes](./indexes) for scalar indexing before assuming a filtered search is slow because of the vector index.
+  - **Defaulting to dense-only search for a corpus with exact-match-sensitive queries** (IDs, product codes, names) — hybrid search with a sparse field usually fixes this cheaply.
+  - **Raising `limit` to page through results** — use an iterator; a very high `limit` on a single call increases memory and latency for a single query instead of amortizing over a stream.
+</Callout>
+
+## References
+
+- [Milvus — Filtered Search](https://milvus.io/docs/filtered-search.md)
+- [Milvus — Multi-Vector Search](https://milvus.io/docs/multi-vector-search.md)
+- [Milvus — Full Text Search](https://milvus.io/docs/full-text-search.md)
+- [Milvus — Boolean Expression Rules](https://milvus.io/docs/boolean.md)
+- [Milvus — Use Partition Key](https://milvus.io/docs/use-partition-key.md)
+- [Milvus — With Iterators](https://milvus.io/docs/with-iterators.md)
+- [Schemas](./schemas)
+- [Indexes](./indexes)
+- [Function & Model Inference](./function-and-model-inference)

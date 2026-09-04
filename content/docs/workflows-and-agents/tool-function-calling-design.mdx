@@ -1,0 +1,131 @@
+---
+title: Tool / Function-Calling Design
+description: How to design tools as a contract with a non-deterministic agent caller, from schema and description design through namespacing, response shaping, and scaling past a handful of tools.
+---
+
+Per [Anthropic's guide to writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents): *"tools are a new kind of software which reflects a contract between deterministic systems and non-deterministic agents."* A traditional function call behaves identically given the same inputs. A tool, called by an agent, doesn't get that guarantee — the agent may hallucinate arguments, skip the tool entirely, or use it in a way you didn't anticipate. That changes what "good tool design" actually means.
+
+<Callout type="info">
+  Unlike most patterns in this series, this doc's primary source isn't an academic paper being adapted for production — it's Anthropic's own current, first-party guidance, and it's genuinely the state of the art here. Cite it as authoritative, not as a simplification of something more rigorous.
+</Callout>
+
+## Core concepts
+
+- **Tools as a contract with a non-deterministic caller** — design for an agent that might misuse a tool, not for a caller that always behaves correctly.
+- **Consolidation over proliferation** — instead of `list_users`, `list_events`, and `create_event`, build one `schedule_event` tool that finds availability and schedules in a single call. Instead of `read_logs`, build `search_logs` that returns only relevant lines with context. Fewer, higher-level tools reduce selection ambiguity and let the model complete multi-step work in one call.
+- **Descriptions are the primary lever, examples are secondary** — an extremely detailed description (what it does, when to use it and when not to, what each parameter means, any caveats) matters more than anything else for tool performance. `input_examples` help specifically for complex, nested, or format-sensitive inputs — they don't replace a good description.
+- **Namespacing must be evaluated, not assumed** — namespace by service (`asana_search`, `jira_search`) and by resource (`asana_projects_search`, `asana_users_search`) once an agent has access to many tools. Prefix vs. suffix positioning has measurable, model-dependent effects on tool-selection accuracy — test it against your own models rather than assuming a convention transfers.
+
+## Designing a tool
+
+<Steps>
+<Step>
+
+#### Consolidate before you design a schema
+
+- **Action**: Before writing any schema, check whether this should be one higher-level tool instead of several low-level ones.
+  ```
+  Low-level (avoid):  list_users, list_events, create_event
+  Consolidated:       schedule_event(attendees, duration, constraints)
+                      — finds availability and schedules in one call
+  ```
+- **Result**: The agent completes the whole "find a slot and book it" task in a single tool call, instead of stitching together three separate ones itself.
+
+</Step>
+<Step>
+
+#### Write the input_schema
+
+- **Action**: A JSON Schema object with a required/optional split and a description on every parameter.
+  ```json
+  {
+    "name": "get_stock_price",
+    "description": "Retrieves the current stock price for a given ticker symbol. The ticker symbol must be a valid symbol for a publicly traded company on a major US stock exchange like NYSE or NASDAQ. The tool will return the latest trade price in USD. It should be used when the user asks about the current or most recent price of a specific stock. It will not provide any other information about the stock or company.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "description": "The stock ticker symbol, e.g. AAPL for Apple Inc."
+        }
+      },
+      "required": ["ticker"]
+    }
+  }
+  ```
+- **Result**: Compare this against a poor description — `"Gets the stock price for a ticker."` with no parameter description. The good version tells the model what it does, when to use it, what it returns, and what `ticker` means; the poor version leaves the model guessing on all four.
+
+</Step>
+<Step>
+
+#### Add input_examples for complex inputs
+
+- **Action**: For nested, optional, or format-sensitive parameters, attach schema-validated example calls directly to the tool definition.
+  ```json
+  "input_examples": [
+    {"location": "San Francisco, CA", "unit": "fahrenheit"},
+    {"location": "Tokyo, Japan", "unit": "celsius"},
+    {"location": "New York, NY"}
+  ]
+  ```
+- **Result**: The model sees concrete, well-formed call patterns — including that `unit` is optional — without needing prose explanation stuffed into the system prompt. Budget roughly 20-50 tokens per simple example, 100-200 for complex nested ones.
+
+</Step>
+<Step>
+
+#### Namespace the tool
+
+- **Action**: Once this tool is one of several spanning multiple systems, prefix or suffix it by service and resource.
+  ```
+  asana_search          # service-level
+  asana_projects_search # resource-level, once asana has multiple search tools
+  ```
+- **Result**: Tool purposes stop overlapping in the model's view. Note: whether prefix (`asana_search`) or suffix (`search_asana`) performs better is model-dependent — evaluate both against your actual models rather than picking one by convention.
+
+</Step>
+<Step>
+
+#### Design the response shape
+
+- **Action**: Return only high-signal information — stable identifiers, not bloated raw payloads.
+  ```json
+  // Good: { "customer_id": "cust_8f2a", "status": "active", "plan": "pro" }
+  // Bad:  the full internal customer record, unfiltered
+  ```
+- **Result**: The agent gets exactly what it needs to reason about its next step, without wasting context on fields it will never use.
+
+</Step>
+</Steps>
+
+## Building an evaluation harness
+
+Per Anthropic's guide, this is a first-class practice, not an afterthought:
+
+- **Instrument reasoning before tool calls** — instruct the agent to output reasoning or feedback blocks immediately before each tool call (or use interleaved thinking, if your model supports it). This is the actual debugging lever for a bad tool description: it lets you see *why* the agent did or didn't call a given tool, not just what it called.
+- **Track tool-call-level metrics, not just end-to-end success** — runtime per call, total calls per task, token consumption, and error rate. Redundant calls suggest a pagination or consolidation problem; invalid-parameter errors point to an unclear description; token overages point to a response-shaping problem. End-to-end task success alone won't tell you which tool is actually the weak link.
+
+## Scaling past a handful of tools
+
+Per [Anthropic's advanced tool use guide](https://www.anthropic.com/engineering/advanced-tool-use), a typical five-MCP-server setup — GitHub (35 tools), Slack (11), Sentry (5), Grafana (5), Splunk (2) — produces *"58 tools consuming approximately 55K tokens before the conversation even starts,"* regardless of which tools a given task actually needs. Two fixes once you're at this scale:
+
+- **Tool Search Tool** — mark tools `defer_loading: true` so they're discoverable by name/description only when needed, rather than loading every schema upfront. Preserves roughly 95% of context while keeping the full tool library accessible; measured accuracy gains in Anthropic's testing: Opus 4 improved 49%→74%, Opus 4.5 improved 79.5%→88.1%.
+- **Programmatic Tool Calling** — instead of a full inference round-trip per tool call, the model writes code that orchestrates multiple tool calls and filters results within the execution environment, keeping intermediate results out of context. Reduced token consumption by 37% on complex research tasks in Anthropic's testing, with latency and accuracy gains as well.
+
+<Callout type="info">
+  **Cross-provider note.** The underlying four-step pattern — define schema, detect a call, execute it, return the result — is consistent across OpenAI, Anthropic, and Google, though API shapes genuinely differ (Anthropic's content-block architecture separates tool calls from text cleanly; OpenAI's Responses API adds tool namespacing for larger tool counts). MCP has become the practical, vendor-neutral standard for tool definitions, which is a reasonable choice if you want integrations that survive a future provider swap. This is directional industry guidance, not a benchmarked comparison — treat it as background, not a specific cited figure.
+</Callout>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Too many low-level tools instead of consolidated higher-level ones** — forces the agent to stitch together multi-step work itself instead of completing it in one call.
+  - **Thin descriptions** — under 3-4 sentences typically leaves the model guessing about when and how to use a tool. This is the single highest-leverage fix available.
+  - **Assuming a namespacing convention transfers across models** — prefix vs. suffix effects are model-dependent; evaluate rather than assume.
+  - **Measuring only end-to-end task success** — without tool-call-level metrics, you can't tell which specific tool is causing errors or redundant calls.
+  - **Loading every tool's schema upfront past a handful of tools** — consider deferred loading before context bloat becomes the actual bottleneck.
+</Callout>
+
+## References
+
+- [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
+- [Claude docs — Define tools (implement-tool-use)](https://platform.claude.com/docs/en/agents-and-tools/tool-use/implement-tool-use)
+- [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use)

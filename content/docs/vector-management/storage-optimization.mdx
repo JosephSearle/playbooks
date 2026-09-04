@@ -1,0 +1,84 @@
+---
+title: Storage Optimization
+description: Managing memory and storage cost at scale through memory-mapping, compaction, and tiered storage.
+---
+
+A collection that performs well at prototype scale can become expensive or slow as it grows, usually for one of three reasons: too much data held fully in memory, fragmented storage from continuous writes and deletes, or no distinction between hot and cold data. These are operational tuning levers, applied after a collection's schema ([Schemas](./schemas)) and index ([Indexes](./indexes)) are already settled.
+
+<Callout type="info">
+  This doc covers **cost and performance tuning at scale**: memory-mapping, compaction, and tiered/hot-cold storage. It assumes normal ingestion and query patterns are already in place — see [Ingestion](./ingestion) and [Search & Filtering](./search-tuning).
+</Callout>
+
+## Core concepts
+
+- **Memory-mapping (mmap) trades query latency for memory footprint** — instead of loading a field's full data into RAM, the OS maps it from disk and pages it in on access. Worthwhile for large scalar or vector fields that are queried less often than they're stored, where paying occasional page-fault latency beats paying for RAM to hold everything.
+- **Compaction reclaims space fragmented by deletes and small-segment writes** — a collection under steady insert/delete/upsert traffic ([Ingestion](./ingestion)) accumulates small segments and dead space from deleted rows; compaction merges segments and drops tombstoned data. This is maintenance, not optional — an uncompacted collection under heavy churn degrades in both storage cost and query latency over time.
+- **Clustering compaction additionally reorganizes data by a scalar key** — beyond just merging segments, it groups rows by a chosen field (e.g., `tenant_id`), which improves the effectiveness of filtered search and partition-key search on that field.
+- **Tiered storage separates hot and cold data by access frequency** — recently written or frequently queried data stays on fast, expensive storage; older or rarely accessed data moves to slower, cheaper storage automatically. This only pays off when your access pattern is genuinely skewed (recent data queried far more than old data) — verify that assumption before adopting it.
+- **Warm-up and eviction are the levers that make tiering predictable** — warm-up proactively loads data expected to be queried soon (e.g., before a known traffic spike); eviction reclaims hot-tier space from data that's gone cold, rather than waiting for an out-of-memory condition to force it.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Enable mmap for large, infrequently-hot fields
+
+- **Action**: Turn on memory-mapping at the collection or field level for data where full in-memory residency isn't justified by query frequency.
+  ```python
+  from pymilvus import MilvusClient
+
+  client = MilvusClient(uri="http://localhost:19530")
+  client.alter_collection_properties(
+      collection_name="documents",
+      properties={"mmap.enabled": "true"},
+  )
+  ```
+- **Result**: Memory usage for `documents` drops significantly; queries against mmap'd data see a latency increase proportional to how much of it is genuinely cold (not cached by the OS page cache), which is the correct tradeoff for a large archive that's queried occasionally rather than constantly.
+
+</Step>
+<Step>
+
+#### Schedule compaction as routine maintenance, not incident response
+
+- **Action**: Trigger compaction periodically for collections under continuous write/delete traffic, and use clustering compaction when filtered search on a specific field is a primary query pattern.
+  ```python
+  client.compact(collection_name="documents")
+
+  # Clustering compaction: reorganize by tenant_id to speed up tenant-scoped filtered search
+  client.compact(collection_name="documents", is_clustering=True)
+  ```
+- **Result**: Segment count and dead-tuple ratio stay bounded, keeping both query latency and storage cost predictable, instead of degrading silently until someone investigates why search got slow.
+
+</Step>
+<Step>
+
+#### Warm up before a known traffic pattern, evict when data goes cold
+
+- **Action**: Proactively load data you know will be queried soon; let eviction policy reclaim hot-tier space from what hasn't been accessed recently.
+  ```python
+  client.load_partitions(collection_name="documents", partition_names=["tenant_acme_recent"])
+  # eviction is typically policy-driven (e.g., LRU with a TTL) rather than a manual per-call action
+  ```
+- **Result**: A known-upcoming spike in queries against a specific partition doesn't pay first-query cold-load latency, while data that's genuinely gone cold is evicted automatically rather than occupying hot-tier capacity indefinitely.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Enabling mmap on a field that's actually hot** — mmap trades latency for memory; applying it to a field on the critical path of every query just adds latency without a real memory-pressure problem to justify it.
+  - **Never compacting a high-churn collection** — treat compaction as scheduled maintenance (e.g., off-peak, on a cadence matched to write volume), not a reactive fix once query latency has already degraded.
+  - **Adopting tiered storage without a genuinely skewed access pattern** — if old and new data are queried about equally often, tiering adds complexity without the hot/cold cost benefit it's designed for.
+  - **No warm-up before a predictable spike** — a scheduled batch job, a marketing event, a known traffic pattern — warm the relevant partitions ahead of time instead of absorbing cold-load latency during the spike itself.
+</Callout>
+
+## References
+
+- [Milvus — Memory Mapping](https://milvus.io/docs/mmap.md)
+- [Milvus — Clustering Compaction](https://milvus.io/docs/clustering-compaction.md)
+- [Milvus — Tiered Storage Overview](https://milvus.io/docs/tiered-storage-overview.md)
+- [Milvus — Warm Up](https://milvus.io/docs/warm-up.md)
+- [Milvus — Eviction](https://milvus.io/docs/eviction.md)
+- [Ingestion](./ingestion)
+- [Search & Filtering](./search-tuning)

@@ -1,0 +1,116 @@
+---
+title: AI Gateway
+description: A unified, governed interface in front of LLM providers — connections, endpoints, traffic routing, usage tracking, budgets, and guardrails — implemented via the MLflow Tracking Server's built-in AI Gateway.
+---
+
+Scattering provider keys, retry logic, and usage tracking across application code makes it hard to govern how LLM calls actually happen. A unified, centrally-governed interface in front of every provider gives you one place to manage credentials, route and fail over traffic, track usage, enforce budgets, and apply content guardrails. We use the MLflow Tracking Server's built-in AI Gateway for this — no separate service to stand up.
+
+<Callout type="info">
+  This doc assumes a running MLflow tracking server. It's also this series' first real anchor for **guardrails**: none of the RAG, agent, or eval/monitor docs cover content-policy enforcement directly, so treat that section as standalone rather than assuming prior context.
+</Callout>
+
+## Core concepts
+
+- **LLM Connections vs. Endpoints** — a Connection stores provider credentials centrally (masked, reusable); an Endpoint maps a name (which becomes part of the API path) to a provider/model and references a Connection rather than storing credentials itself.
+- **Traffic splitting vs. fallbacks** — two independent, composable mechanisms on an endpoint: splitting distributes a percentage of traffic across multiple models (A/B comparison), fallbacks try alternate models sequentially only when the primary fails (resilience).
+- **The guardrails pipeline** — `Request → Pre-LLM Guardrails → LLM → Post-LLM Guardrails → Response`, with three built-in categories (Safety, PII Detection, Custom).
+- **Budget policies as hard vs. soft control** — Alert (webhook, request proceeds) versus Reject (HTTP 429, requests actually blocked) are different tools for different risk tolerances.
+
+## Setting up and operating the gateway
+
+<Steps>
+<Step>
+
+#### Stand up the gateway
+
+- **Action**: The gateway is built into the MLflow tracking server — no separate service to install or start. Once that stack is running, create a connection and an endpoint directly against it.
+  Navigate to `http://localhost:5000/#/settings` → **LLM Connections** → **Create** (name, provider, API key). Then **Endpoints** → **Create** (name, provider, model, connection).
+- **Result**: The gateway is live at the same `http://localhost:5000` the rest of this MLflow series already points at. Query it directly:
+  ```bash
+  curl -X POST http://localhost:5000/gateway/my-chat-endpoint/mlflow/invocations \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $MLFLOW_TRACKING_TOKEN" \
+    -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
+  ```
+  If your server sits behind an OIDC/SSO auth layer, the `Authorization: Bearer $MLFLOW_TRACKING_TOKEN` header is required — omitting it returns an unauthorized response rather than a model reply. Or point the OpenAI SDK at the gateway as `base_url` with `MLFLOW_TRACKING_TOKEN` as the API key.
+
+</Step>
+<Step>
+
+#### Configure traffic splitting and fallbacks
+
+- **Action**: On an endpoint's detail page, use the Priority 1 (Traffic Split) section to add multiple models with weight percentages that sum to 100%, and the Priority 2 (Fallback) section to add ordered fallback models.
+  ```
+  Priority 1 (Traffic Split): 50% GPT-5, 50% Claude 4.5 Sonnet
+  Priority 2 (Fallback):      GPT-5 mini → Claude 4.5 Haiku
+  ```
+- **Result**: Traffic splitting distributes requests across models for gradual rollout comparison — the UI validates the weights sum to 100% in real time. Fallbacks are tried sequentially, top to bottom, only when the primary model fails — the app stays operational through an outage without any client-side retry logic.
+
+</Step>
+<Step>
+
+#### Turn on usage tracking
+
+- **Action**: On an endpoint's detail page, toggle **Enable usage tracking** and save.
+- **Result**: Every request is auto-logged as a trace, populating request volume (daily/hourly averages), latency (p50/p90/p99), error rate, token consumption (input/output, per-request average), and cost (by model/provider, cumulative). View all endpoints at `AI Gateway > Usage`, or a single endpoint's own Usage tab — both filterable by endpoint, time-unit, and range. Not every provider/model reports token and cost data, so some charts may stay empty depending on configuration. This overlaps directly with [Monitoring](./monitoring)'s trace-based signal — same underlying traces, viewed from the gateway's operational angle rather than the application-quality angle.
+
+</Step>
+<Step>
+
+#### Set a budget policy
+
+- **Action**: At `AI Gateway > Budgets`, set a USD threshold, a reset window (daily/weekly/monthly), and an action.
+  ```
+  Threshold: $500 / month
+  Action: Reject (HTTP 429 once breached)
+  ```
+- **Result**: **Alert** fires a webhook and lets requests continue — a soft signal. **Reject** blocks subsequent requests with HTTP 429 once the threshold is breached (the request that caused the overage still completes). Windows reset on fixed schedules — daily at midnight UTC, weekly on Sundays, monthly on the 1st. For multiple gateway instances, switch the tracker from the default **Local** (in-process) to **Redis** via `MLFLOW_GATEWAY_BUDGET_REDIS_URL`, so the budget is enforced globally rather than per-instance.
+
+</Step>
+<Step>
+
+#### Add a guardrail
+
+- **Action**: Configure a Pre-LLM guardrail to catch PII in the request, and a Post-LLM guardrail to catch unsafe content in the response.
+  ```
+  Pre-LLM  — PII Detection: reviews {{ inputs }} for names, emails, phone numbers → Sanitize
+  Post-LLM — Safety: reviews {{ outputs }} for harmful/offensive/toxic language → Block
+  ```
+  A judge instruction looks like: `"Review the LLM response below for any harmful, offensive, or hateful language. Reply with a JSON object: {"rationale":"...", "result":"yes/no"}"`.
+- **Result**: The judge's "yes" permits the content through; "no" triggers the configured action — **Block** returns HTTP 400 with error detail, **Sanitize** redacts the flagged content and lets the request continue. Multiple guardrails in the same stage run sequentially; a block short-circuits any remaining guardrails in that stage. **Custom Guardrail** is available for anything the two built-ins don't cover.
+
+</Step>
+<Step>
+
+#### Route coding-agent traffic through the gateway
+
+- **Action**: Point Claude Code, OpenAI Codex, Gemini CLI, or a custom-provider agent runtime at a gateway endpoint instead of calling the provider directly.
+- **Result**: Coding agents and long-running agent runtimes can make dozens to hundreds of LLM calls per session, often unattended — routing that traffic through the gateway gives you the same three controls as above with zero code changes: **Observability** (every request captured as a trace — inputs, outputs, token counts, latency), **Budget control** (global or per-workspace spending limits), and **Guardrails** (content policy enforcement on agent requests). This is the direct oversight mechanism for exactly the kind of autonomous, high-volume sessions this team's own Claude Code usage produces.
+
+</Step>
+</Steps>
+
+## What the gateway costs you
+
+Per MLflow's own benchmarks, gateway overhead (config caching, secret decryption, tracing, provider dispatch) stays in the "single-digit-to-tens-of-milliseconds range" — a concrete example showed 87ms total request duration with only 3ms attributable to the gateway itself, the rest being the upstream provider call. That number comes from a controlled setup (a fake upstream fixed at 50ms latency, 4 MLflow instances behind nginx, 50 concurrent requests, Postgres backend) and is explicitly "pure MLflow overhead" — it doesn't include real-world provider latency variance, network distance to the actual LLM API, TLS/SSL overhead, or auth-check latency, so treat it as a floor, not a production guarantee.
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Storing provider keys in application code** instead of an LLM Connection — this throws away centralized rotation; a key change means updating every place it's hardcoded instead of one connection.
+  - **Relying on Alert mode alone in a cost-sensitive environment** — Alert only notifies; Reject is what actually stops overspend once a threshold is hit.
+  - **Assuming usage tracking works uniformly across every provider** — token and cost metrics aren't supported for every provider/model; empty charts may just mean unsupported reporting, not zero usage.
+  - **Running multiple gateway instances with the Local budget tracker** — Local state doesn't share across instances; switch to Redis for globally-enforced budgets.
+  - **Treating the benchmark's isolated overhead numbers as a production guarantee** — real-world latency includes provider variance and network factors the benchmark explicitly excludes.
+</Callout>
+
+## References
+
+- [MLflow — AI Gateway quickstart](https://mlflow.org/docs/latest/genai/governance/ai-gateway/quickstart/)
+- [MLflow — API Keys / LLM Connections](https://mlflow.org/docs/latest/genai/governance/ai-gateway/api-keys/create-and-manage/)
+- [MLflow — Endpoints](https://mlflow.org/docs/latest/genai/governance/ai-gateway/endpoints/create-and-manage/)
+- [MLflow — Traffic Routing & Fallbacks](https://mlflow.org/docs/latest/genai/governance/ai-gateway/traffic-routing-fallbacks/)
+- [MLflow — Usage Tracking](https://mlflow.org/docs/latest/genai/governance/ai-gateway/usage-tracking/)
+- [MLflow — Budget Alerts & Limits](https://mlflow.org/docs/latest/genai/governance/ai-gateway/budget-alerts-limits/)
+- [MLflow — Guardrails](https://mlflow.org/docs/latest/genai/governance/ai-gateway/guardrails/)
+- [MLflow — Performance & Benchmarks](https://mlflow.org/docs/latest/genai/governance/ai-gateway/benchmarks/)
+- [MLflow — Coding Agents & Long-Running Agents](https://mlflow.org/docs/latest/genai/governance/ai-gateway/coding-agents/)

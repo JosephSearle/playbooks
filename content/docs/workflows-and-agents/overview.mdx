@@ -1,0 +1,57 @@
+---
+title: Overview
+description: How the team designs, builds, and operates LLM workflows and agents, from foundational patterns through tool design, human approval gates, and memory.
+---
+
+This section covers how the team designs, builds, and operates LLM workflows and agents — from Anthropic's foundational workflow/agent distinction and the topology patterns built on it, through the cross-cutting capabilities every one of those patterns eventually needs: tool design, human approval gates, and memory.
+
+## What's in this section
+
+- **[Patterns](./patterns/adoption-strategy)** — the ten workflow/agent topologies, from Prompt Chaining through Network/Mesh, plus the Adoption Strategy decision guide for which one fits a given problem.
+- **[Tool / Function-Calling Design](./tool-function-calling-design)** — how to design the tools every pattern above actually calls.
+- **[Human-in-the-Loop Approval Workflows](./hitl-approval-workflows)** — pausing execution for human review before a sensitive tool call runs.
+- **[Agent Memory](./memory)** — semantic, episodic, and procedural memory, and the short-term vs. long-term architecture behind them.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Patterns — Adoption Strategy
+
+Understand the three-tier decision framework — single call, workflow, or agent — before touching any specific pattern. See [Adoption Strategy](./patterns/adoption-strategy).
+
+</Step>
+<Step>
+
+#### Patterns — the topology series
+
+Work through [Prompt Chaining](./patterns/prompt-chaining) up through [Network / Mesh](./patterns/network-mesh) in order — each pattern builds on assumptions established by the ones before it, as cross-linked throughout the series.
+
+</Step>
+<Step>
+
+#### Tool / Function-Calling Design
+
+Once a topology is chosen, every pattern above assumes well-designed tools. See [Tool / Function-Calling Design](./tool-function-calling-design).
+
+</Step>
+<Step>
+
+#### Human-in-the-Loop Approval Workflows
+
+Layer an approval gate on top of the chosen pattern's sensitive tools. See [Human-in-the-Loop Approval Workflows](./hitl-approval-workflows).
+
+</Step>
+<Step>
+
+#### Agent Memory
+
+Add semantic, episodic, or procedural memory once the agent needs to persist facts or experiences across turns or threads. See [Agent Memory](./memory).
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  This reading order is a suggestion, not a requirement. A developer already familiar with the topologies can skip straight to Tool Design, HITL, or Memory, and the [Adoption Strategy](./patterns/adoption-strategy) doc is designed to be revisited whenever picking a pattern for a new use case — not just read once linearly.
+</Callout>

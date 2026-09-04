@@ -1,0 +1,97 @@
+---
+title: Change Data Capture
+description: Streaming row- and object-level change events from a source as they happen, instead of periodically polling for what changed.
+---
+
+Change Data Capture (CDC) treats "what changed" as a first-class event stream rather than a question you ask a source periodically. A source that already tracks changes internally — a database's write-ahead log, a Git commit history — can emit those changes directly, so a sync pipeline reacts to them as they happen instead of re-scanning to discover them.
+
+<img src="/images/data-synchronization/change-data-capture.svg" alt="Change Data Capture pipeline: a Source Database's write-ahead log is read by a CDC Log Reader, which publishes change events to an Event Stream, consumed by a Sync Consumer that upserts into the Vector Store" style={{ margin: '1.5rem 0' }} />
+
+<Callout type="info">
+  This doc covers **event-driven sync** specifically — for sources without a native change feed, see [Batch Orchestration](./batch-orchestration) instead. Both patterns still need the record-keeping layer covered in [Incremental Sync & Deduplication](./incremental-sync-and-dedup) to actually be correct over time; CDC solves *detecting* change, not deduplication or deletion propagation on its own.
+</Callout>
+
+## Core concepts
+
+- **Log-based CDC reads the source's own change log, not the current state** — a database's write-ahead log (Postgres logical replication) or binary log (MySQL binlog) already records every insert/update/delete in order; a log-based CDC reader (Debezium is the widely used reference implementation) tails that log rather than querying table contents, which is both lower-overhead on the source and captures deletes correctly — something a polling query against an `updated_at` column structurally cannot do.
+- **An event stream decouples capture from consumption** — the CDC reader publishes change events to a durable stream (Kafka is the common choice, via Kafka Connect); one or more consumers process that stream independently, at their own pace, with the stream itself acting as a buffer if a consumer falls behind or restarts. This is what makes CDC resilient to a consumer outage, unlike a direct source-to-sink push.
+- **Snapshot, then stream** — a CDC pipeline typically starts with an initial full snapshot of existing data (since the change log only has changes from the point the reader started, not history), then switches to streaming ongoing changes from that point forward. Treat the snapshot as a one-time backfill, distinct from steady-state operation.
+- **This same pattern shows up inside vector database engines themselves** — Milvus, for example, uses an internal write-ahead-log-backed streaming layer to durably sequence writes before they're indexed, for the same reason an external CDC pipeline uses one: durability and ordering guarantees that a direct-write path alone doesn't give you. Recognizing the pattern at both layers helps clarify why it's worth the added infrastructure.
+- **CDC captures source-of-truth changes, not your pipeline's derived state** — the events tell you a row changed; whether that means "re-embed this chunk" is a decision your consumer makes, informed by the record-keeping layer (see [Incremental Sync & Deduplication](./incremental-sync-and-dedup)), not something the CDC layer itself decides.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Enable log-based capture at the source
+
+- **Action**: Configure the source database for logical/binlog-based replication, then point a CDC connector at it.
+  ```yaml
+  # Debezium PostgreSQL connector config
+  connector.class: io.debezium.connector.postgresql.PostgresConnector
+  database.hostname: source-db.internal
+  database.dbname: docs
+  table.include.list: public.articles
+  plugin.name: pgoutput
+  slot.name: docs_sync_slot
+  ```
+- **Result**: Debezium performs an initial consistent snapshot of `articles`, then begins streaming every subsequent insert/update/delete as a structured change event, in commit order.
+
+</Step>
+<Step>
+
+#### Route change events through a durable stream
+
+- **Action**: Configure the sink side of the pipeline — here, a Kafka Connect sink targeting the vector database directly.
+  ```json
+  {
+    "name": "milvus-sink",
+    "config": {
+      "connector.class": "com.milvus.io.kafka.connect.MilvusSinkConnector",
+      "topics": "docs.public.articles",
+      "milvus.uri": "http://milvus:19530",
+      "milvus.collection": "articles"
+    }
+  }
+  ```
+- **Result**: Change events published by the source connector land on the `docs.public.articles` topic and are consumed independently by the sink connector — if the sink is down, events queue in Kafka rather than being lost or blocking the source.
+
+</Step>
+<Step>
+
+#### Transform change events into upserts (and deletes)
+
+- **Action**: A consumer (custom, or a stream-processing step ahead of the sink) turns each change event into the right vector-store operation based on its operation type.
+  ```python
+  def handle_change_event(event: dict):
+      op = event["op"]  # "c" (create), "u" (update), "d" (delete)
+      row = event["after"] if op in ("c", "u") else event["before"]
+
+      if op in ("c", "u"):
+          embedding = embed(row["content"])
+          collection.upsert([{"id": row["id"], "embedding": embedding, "content": row["content"]}])
+      elif op == "d":
+          collection.delete(ids=[row["id"]])
+  ```
+- **Result**: Inserts and updates re-embed and upsert by the stable source ID; deletes propagate as actual removals — the deletion path that a polling-based approach against an `updated_at` column would silently miss.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **No initial snapshot** — starting the CDC reader without one means historical data already in the source never reaches the vector store; confirm the connector performs (or you separately run) a backfill.
+  - **Treating the change log as infinite retention** — replication slots and log retention are bounded; a consumer down for too long can fall behind past what the source retains, requiring a full re-snapshot to recover. Monitor consumer lag.
+  - **Re-embedding on every update event regardless of what changed** — if only an unrelated column changed (a view count, a status flag) but the content field didn't, re-embedding wastes cost; see [Incremental Sync & Deduplication](./incremental-sync-and-dedup) for content-hash-based filtering.
+  - **Ignoring delete events** — a sync pipeline that only handles create/update leaves orphaned vectors for rows that were removed at the source.
+</Callout>
+
+## References
+
+- [Conduktor — What is Change Data Capture? CDC Fundamentals](https://www.conduktor.io/glossary/what-is-change-data-capture-cdc-fundamentals)
+- [Change Data Capture in 2026: Debezium](https://thebackenddevelopers.substack.com/p/change-data-capture-in-2026-debezium)
+- [Milvus — Kafka Connect Milvus Sink Connector](https://milvus.io/docs/kafka-connect-milvus.md)
+- [Milvus — Replacing Kafka/Pulsar with Woodpecker](https://milvus.io/blog/we-replaced-kafka-pulsar-with-a-woodpecker-for-milvus.md)
+- [Choosing a Sync Strategy](./choosing-a-sync-strategy)
+- [Incremental Sync & Deduplication](./incremental-sync-and-dedup)

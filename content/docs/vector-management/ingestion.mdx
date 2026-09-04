@@ -1,0 +1,93 @@
+---
+title: Ingestion
+description: Inserting, upserting, and deleting data in a vector collection, and the consistency and idempotency tradeoffs each involves.
+---
+
+Getting data into a collection looks like a simple write path, but the three operations — insert, upsert, delete — have different guarantees, and picking the wrong one is a common source of duplicate or stale vectors in production. This doc assumes a collection and schema already exist; see [Collections](./collections) and [Schemas](./schemas) if not.
+
+<Callout type="info">
+  This doc covers **write-path operations**: insert, upsert, delete, batching, and idempotency. It doesn't cover generating the embeddings themselves — see [Function & Model Inference](./function-and-model-inference) — or read-path consistency tuning, covered in [Collections](./collections).
+</Callout>
+
+## Core concepts
+
+- **Insert assumes a new primary key** — inserting a row whose primary key already exists either errors or (depending on the engine) silently creates a duplicate entity rather than replacing it. Insert is for genuinely new data.
+- **Upsert is insert-or-replace by primary key** — the correct default for most ingestion pipelines, because reruns, retries, and reprocessing a changed source document are all the normal case, not the exception.
+- **Idempotency comes from a stable primary key, not from the write operation** — this is why [Schemas](./schemas) recommends a natural external key over `auto_id`: without one, "did this chunk already get written" requires a query before every write.
+- **Delete is by primary key or by filter expression** — bulk deletes (e.g., "remove everything from `source_doc = 'old.pdf'`") use the same filter syntax as search, covered in [Search & Filtering](./search-tuning).
+- **Batch, don't stream one row at a time** — per-row inserts pay per-call overhead; batching into a few hundred to a few thousand rows per call (depending on vector dimensionality) amortizes that cost dramatically.
+- **Writes are eventually consistent by default** — a row just inserted may not be immediately visible to a search using the default consistency level; see [Collections](./collections) for choosing `Strong` on paths that need read-your-writes.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Batch and upsert as the default write path
+
+- **Action**: Build a reprocessing-safe ingestion function around upsert, keyed by a stable ID (e.g., a hash of source + chunk offset).
+  ```python
+  from pymilvus import MilvusClient
+
+  client = MilvusClient(uri="http://localhost:19530")
+
+  def upsert_chunks(collection_name: str, chunks: list[dict]):
+      # chunks: [{"chunk_id": ..., "dense_embedding": [...], "source_doc": ..., ...}, ...]
+      BATCH_SIZE = 500
+      for i in range(0, len(chunks), BATCH_SIZE):
+          batch = chunks[i : i + BATCH_SIZE]
+          client.upsert(collection_name=collection_name, data=batch)
+  ```
+- **Result**: Rerunning the same ingestion job (e.g., after a crash, or on a schedule against a source that changed) replaces existing chunks in place instead of duplicating them, and batching keeps throughput high.
+
+</Step>
+<Step>
+
+#### Delete by key or by filter
+
+- **Action**: Remove specific rows by key, or a whole slice by filter expression when a source document is retired.
+  ```python
+  # Targeted: known keys
+  client.delete(collection_name="documents", ids=["chunk_001", "chunk_002"])
+
+  # Bulk: everything from a retired source
+  client.delete(collection_name="documents", filter='source_doc == "old_policy_v1.pdf"')
+  ```
+- **Result**: The filter form lets a "document retired/replaced" event in your source system map directly to a single delete call, instead of first querying for matching IDs.
+
+</Step>
+<Step>
+
+#### Verify writes landed before depending on them
+
+- **Action**: For ingestion jobs whose success gates something downstream (e.g., "reindex complete" notifications), query with `Strong` consistency right after the write rather than assuming eventual consistency has caught up.
+  ```python
+  client.upsert(collection_name="documents", data=batch)
+  result = client.query(
+      collection_name="documents",
+      filter=f'chunk_id in {[row["chunk_id"] for row in batch]}',
+      consistency_level="Strong",
+  )
+  assert len(result) == len(batch)
+  ```
+- **Result**: The ingestion job fails loudly if writes didn't land, instead of a downstream consumer silently searching against incomplete data.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Using insert for a pipeline that reruns** — any pipeline that can be retried, rescheduled, or replayed against overlapping data should use upsert, not insert.
+  - **No stable primary key strategy** — relying on `auto_id` makes upsert-based idempotency impossible; fix this at the schema level (see [Schemas](./schemas)), not by adding dedup logic in the pipeline.
+  - **Single-row writes in a hot loop** — batch inserts/upserts; single-row round trips dominate ingestion time at any real volume.
+  - **Assuming a write is immediately searchable** — default consistency is eventual; if a UX or test depends on read-your-writes, request `Strong` consistency explicitly for that read.
+</Callout>
+
+## References
+
+- [Milvus — Insert, Update, Delete](https://milvus.io/docs/insert-update-delete.md)
+- [Milvus — Upsert Entities](https://milvus.io/docs/upsert-entities.md)
+- [Milvus — Delete Entities](https://milvus.io/docs/delete-entities.md)
+- [Collections](./collections)
+- [Schemas](./schemas)
+- [Search & Filtering](./search-tuning)

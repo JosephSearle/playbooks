@@ -1,0 +1,77 @@
+---
+title: Managed ETL & ELT
+description: Weighing a managed ELT platform's connectors and orchestration against a custom CDC or batch pipeline — a build-vs-buy decision, not a default.
+---
+
+Everything in [Change Data Capture](./change-data-capture) and [Batch Orchestration](./batch-orchestration) can also be bought rather than built: managed ELT platforms ship pre-built connectors for common sources (GitHub, S3-compatible buckets, popular databases) and destination connectors for several vector databases, handling connector maintenance and orchestration infrastructure so you don't have to. Whether that trade is worth it depends on how much your pipeline actually needs to deviate from what the platform assumes.
+
+<Callout type="info">
+  This doc is a **build-vs-buy decision framework**, not an endorsement of a specific platform. It assumes the patterns from [Change Data Capture](./change-data-capture) and [Batch Orchestration](./batch-orchestration) as the "build" side of the comparison.
+</Callout>
+
+## Core concepts
+
+- **A managed platform removes connector maintenance, not pipeline logic** — a pre-built GitHub or S3 connector handles auth, pagination, rate limits, and change detection for that source so you don't maintain that code yourself. It typically does **not** remove the need to define chunking strategy, embedding model choice, or schema mapping into your vector collection — that logic still lives in the transform/load step you configure.
+- **Schema drift handling is a real, underrated value-add** — a source's schema changing (a new column, a renamed field) is a common source of silent pipeline breakage; managed platforms that detect and surface this save real operational toil compared to a custom pipeline that has to be told to watch for it explicitly.
+- **What you give up is fine-grained control and a platform dependency** — a managed platform's connector does chunking, embedding, and sync on its own schedule and in its own way; if your use case needs a non-standard chunking strategy, a specific embedding model the platform doesn't support well, or tight cost control at high volume, DIY CDC/batch gives you that control back at the cost of building and maintaining it yourself.
+- **Cost crosses over at scale, in both directions** — a managed platform's per-row or per-sync pricing can be cheaper than engineering time at low-to-moderate volume, and more expensive than a well-optimized custom pipeline at high volume where the marginal cost of DIY infrastructure amortizes. Model this explicitly rather than assuming either direction by default.
+- **The decision isn't all-or-nothing per system** — it's reasonable to use a managed connector for a well-supported source (a common bucket provider) while building custom CDC for a source with unusual requirements (an internal database with a non-standard schema). Evaluate per source, not as one blanket choice for the whole sync architecture.
+
+## Working through the decision
+
+<Steps>
+<Step>
+
+#### Check connector coverage against your actual sources
+
+- **Action**: For each of your target sources (GitHub repos, bucket storage, databases), check whether a managed platform has a maintained connector for it and for your destination vector database specifically — not just "a database connector" generically, but the exact source shape (a particular auth method, a particular replication mode) you need.
+- **Result**: A source with strong existing coverage is a strong "buy" candidate; a source needing custom auth, a non-standard schema, or fine-grained control is a stronger "build" candidate regardless of what else is true.
+
+</Step>
+<Step>
+
+#### Identify what transform logic the platform actually lets you control
+
+- **Action**: Before committing, verify the platform's transform step supports your chunking strategy and lets you use your chosen embedding model/provider — don't assume "vector DB connector" means full control over how content becomes vectors.
+  ```text
+  Questions to answer against the platform's actual docs:
+  - Can I configure chunk size/overlap, or is it fixed?
+  - Can I point it at my own embedding model/provider, or only theirs?
+  - Can I map source fields to my collection's schema (metadata fields, not just content)?
+  ```
+- **Result**: A platform that only supports its own fixed chunking/embedding choices is a much bigger commitment than one that's flexible on those dimensions — this is usually the deciding factor once connector coverage checks out.
+
+</Step>
+<Step>
+
+#### Model cost at your actual (and projected) volume
+
+- **Action**: Get real pricing for the managed platform at current and 12-month-projected sync volume, and compare against the engineering cost of building and maintaining the equivalent custom pipeline (both the initial build and ongoing connector maintenance as sources evolve).
+- **Result**: A concrete number to decide on, rather than a general instinct that "managed is more expensive" or "DIY is cheaper" — both are true at different scales.
+
+</Step>
+<Step>
+
+#### Decide per source, not as one architecture-wide choice
+
+- **Action**: Where the platform covers a source well and transform flexibility is sufficient, use it; where it doesn't, build custom sync (CDC or batch, per [Choosing a Sync Strategy](./choosing-a-sync-strategy)) for that source specifically.
+- **Result**: A mixed architecture — managed for the straightforward sources, custom for the ones with real requirements the platform can't meet — is a legitimate and common outcome, not a sign of an indecisive design.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Assuming a "vector DB connector" implies full control over chunking/embedding** — verify this explicitly per platform; it's often more fixed than it first appears.
+  - **Comparing managed cost against a DIY pipeline's build cost alone** — factor in ongoing connector maintenance for the DIY side, which is exactly what the managed platform is selling you out of.
+  - **Treating the decision as permanent and platform-wide** — re-evaluate per source, and revisit if volume or requirements change significantly.
+  - **Adopting a managed platform for a source with unusual auth or schema requirements just to avoid building anything** — if the platform's connector doesn't actually fit, you'll end up fighting it, which often costs more than building the custom pipeline would have.
+</Callout>
+
+## References
+
+- [Airbyte — Vector Database Connectors Announcement](https://www.businesswire.com/news/home/20231017608302/en)
+- [Zilliz — Selecting the Right ETL Tools for Unstructured Data](https://zilliz.com/blog/selecting-the-right-etl-tools-for-unstructured-data-to-prepare-for-ai)
+- [Choosing a Sync Strategy](./choosing-a-sync-strategy)
+- [Change Data Capture](./change-data-capture)
+- [Batch Orchestration](./batch-orchestration)
