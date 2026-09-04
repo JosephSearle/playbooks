@@ -1,4 +1,11 @@
 {
   "title": "Data Synchronization",
-  "pages": ["overview", "choosing-a-sync-strategy", "change-data-capture", "batch-orchestration", "incremental-sync-and-dedup", "managed-etl-and-elt"]
+  "pages": [
+    "overview",
+    "choosing-a-sync-strategy",
+    "change-data-capture",
+    "batch-orchestration",
+    "incremental-sync-and-dedup",
+    "managed-etl-and-elt"
+  ]
 }

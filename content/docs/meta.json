@@ -1,4 +1,12 @@
 {
   "title": "Playbook",
-  "pages": ["index", "workflows-and-agents", "mcp", "observability", "rag", "data-synchronization", "vector-management"]
+  "pages": [
+    "index",
+    "workflows-and-agents",
+    "mcp",
+    "observability",
+    "rag",
+    "data-synchronization",
+    "vector-management"
+  ]
 }

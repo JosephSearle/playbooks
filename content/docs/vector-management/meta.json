@@ -1,4 +1,14 @@
 {
   "title": "Vector Management",
-  "pages": ["database", "collections", "schemas", "ingestion", "indexes", "search-tuning", "function-and-model-inference", "storage-optimization", "snapshots"]
+  "pages": [
+    "database",
+    "collections",
+    "schemas",
+    "ingestion",
+    "indexes",
+    "search-tuning",
+    "function-and-model-inference",
+    "storage-optimization",
+    "snapshots"
+  ]
 }

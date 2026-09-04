@@ -1,12 +1,12 @@
-import { defineDocs } from 'fumadocs-mdx/macro';
-import { loader } from 'fumadocs-core/source';
+import { defineDocs } from "fumadocs-mdx/macro";
+import { loader } from "fumadocs-core/source";
 
 const docs = defineDocs({
-  dir: 'content/docs',
+  dir: "content/docs",
   docs: { postprocess: { includeProcessedMarkdown: true } },
 });
 
 export const source = loader({
-  baseUrl: '/docs',
+  baseUrl: "/docs",
   source: docs.toFumadocsSource(),
 });

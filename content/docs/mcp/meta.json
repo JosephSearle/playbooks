@@ -1,4 +1,12 @@
 {
   "title": "MCP",
-  "pages": ["overview", "architecture", "build-server", "build-client", "connecting-to-servers", "authorization-and-security", "debugging-and-testing"]
+  "pages": [
+    "overview",
+    "architecture",
+    "build-server",
+    "build-client",
+    "connecting-to-servers",
+    "authorization-and-security",
+    "debugging-and-testing"
+  ]
 }
