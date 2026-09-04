@@ -1,0 +1,110 @@
+---
+title: Skill Structure & Frontmatter
+description: The required file layout, YAML frontmatter fields, and naming/security rules that determine whether Claude can find and load a Skill at all.
+---
+
+Before a Skill can be well-written, it has to be well-formed — a handful of strict, non-negotiable rules govern file naming and frontmatter, because this is the layer Claude parses mechanically to decide what's available. Getting these wrong doesn't produce a worse Skill; it produces a Skill that fails to load or never triggers.
+
+<Callout type="info">
+  This doc covers **file layout and frontmatter mechanics**. Writing a compelling `description` is its own doc — see [Writing Effective Descriptions](./writing-effective-descriptions) — since that field's content matters as much as its format.
+</Callout>
+
+## Core concepts
+
+- **The folder layout is fixed**: `SKILL.md` (required, exact case-sensitive filename — not `Skill.md`, `SKILL.MD`, or `skill.md`), plus optional `scripts/` (executable code), `references/` (documentation loaded as needed), and `assets/` (templates, fonts, images used in output).
+- **The folder name must be kebab-case and match `name`** — no spaces, no underscores, no capitals. `notion-project-setup` is valid; `Notion Project Setup`, `notion_project_setup`, and `NotionProjectSetup` are all invalid.
+- **`name` and `description` are the only required frontmatter fields.** Everything else is optional:
+  - `name` — kebab-case, max 64 characters, must match the folder name, cannot contain XML tags, cannot use the reserved words `claude` or `anthropic`.
+  - `description` — non-empty, max 1,024 characters, no XML tags, must describe both what the Skill does and when to use it (see [Writing Effective Descriptions](./writing-effective-descriptions)).
+- **Optional fields extend the frontmatter without being required for a Skill to function**:
+  - `license` — e.g. `MIT`, `Apache-2.0`, for open-source Skills.
+  - `compatibility` — 1-500 characters describing environment requirements: intended product, required system packages, network access needs.
+  - `allowed-tools` — restricts which tools the Skill may invoke, e.g. `"Bash(python:*) Bash(npm:*) WebFetch"`.
+  - `metadata` — arbitrary custom key-value pairs; commonly `author`, `version`, `mcp-server`, `category`, `tags`.
+- **No `README.md` inside the skill folder** — all documentation belongs in `SKILL.md` or `references/`. A repo-level `README.md` (for human visitors browsing GitHub) is a separate, legitimate file — it just isn't part of the skill folder itself; see [Distribution & Sharing](./distribution-and-sharing).
+- **Frontmatter security restrictions exist because frontmatter lands in the system prompt** — XML angle brackets (`<` `>`) are forbidden anywhere in frontmatter, and the parser uses safe YAML (no code execution), specifically to prevent a malicious or careless Skill from injecting instructions via its own metadata.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Scaffold the minimal required structure
+
+- **Action**: Create the folder and the one required file.
+  ```
+  notion-project-setup/
+  └── SKILL.md
+  ```
+  ```markdown
+  ---
+  name: notion-project-setup
+  description: Sets up a new Notion project workspace with pages, databases, and templates. Use when the user asks to "set up a project", "create a Notion workspace", or "initialize a project in Notion".
+  ---
+
+  # Notion Project Setup
+
+  ## Instructions
+
+  ### Step 1: Create the workspace root page
+  ...
+  ```
+- **Result**: This is a complete, valid Skill — nothing else is required to start. `scripts/`, `references/`, and `assets/` get added only once the instructions actually need them.
+
+</Step>
+<Step>
+
+#### Add optional frontmatter as real requirements emerge
+
+- **Action**: Extend frontmatter deliberately, not preemptively.
+  ```yaml
+  ---
+  name: notion-project-setup
+  description: Sets up a new Notion project workspace with pages, databases, and templates. Use when the user asks to "set up a project", "create a Notion workspace", or "initialize a project in Notion".
+  license: MIT
+  compatibility: Requires an active Notion MCP connection.
+  metadata:
+    author: Platform Team
+    version: 1.2.0
+    mcp-server: notion
+  ---
+  ```
+- **Result**: `compatibility` tells anyone installing the Skill what it depends on before they hit a runtime failure; `metadata` gives a version to reference when iterating (see [Testing & Iteration](./testing-and-iteration)) without cluttering the required fields.
+
+</Step>
+<Step>
+
+#### Add supporting directories only when the body references them
+
+- **Action**: Grow the folder as the Skill's instructions actually call for scripts, references, or assets — not speculatively.
+  ```
+  notion-project-setup/
+  ├── SKILL.md
+  ├── scripts/
+  │   └── create_databases.py
+  ├── references/
+  │   └── template-catalog.md
+  └── assets/
+      └── default-cover.png
+  ```
+  And reference each explicitly in `SKILL.md`: "Run `scripts/create_databases.py` to provision the standard database set" / "See `references/template-catalog.md` for the full list of available page templates."
+- **Result**: Claude knows exactly when to execute a script versus read a reference file versus use an asset, because the instructions say so explicitly rather than leaving it to guesswork.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Wrong `SKILL.md` casing or naming** — even `Skill.md` fails; the check is exact and case-sensitive.
+  - **Folder name and `name` field mismatch** — e.g. folder `notion_setup` with `name: notion-setup` — keep them identical and kebab-case.
+  - **`name` using a reserved word** — `claude-helper` or `anthropic-tools` will be rejected.
+  - **XML angle brackets anywhere in frontmatter** — even inside `description` prose, `<` or `>` characters break parsing or trip the security restriction.
+  - **A `README.md` left inside the skill folder** — move its content into `SKILL.md` or `references/`; keep a separate repo-level `README.md` only if distributing via GitHub.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Overview](./overview)
+- [Writing Effective Descriptions](./writing-effective-descriptions)

@@ -1,0 +1,78 @@
+---
+title: Overview
+description: Packaging repeatable workflows and domain expertise as Skills — folders of instructions Claude loads on demand, distinct from tools and persistent memory.
+---
+
+Re-explaining the same preferences, procedures, and domain knowledge in every conversation doesn't scale. A Skill is a folder of instructions — a `SKILL.md` file plus optional supporting scripts, references, and assets — that teaches Claude how to handle a specific task or workflow once, so it's applied consistently every time that task comes up again.
+
+<Callout type="info">
+  This section covers **authoring effective Skills**: structure, descriptions, organization, testing, and distribution. It assumes you already know what you want Claude to do repeatedly and consistently — it doesn't cover prompt engineering in general, and where a Skill orchestrates MCP tools, see [MCP](../mcp/overview) for the protocol those tools run on.
+</Callout>
+
+## Core concepts
+
+- **A Skill is a folder, not a prompt** — `SKILL.md` (required) holds YAML frontmatter plus Markdown instructions; `scripts/`, `references/`, and `assets/` (all optional) hold supporting code, documentation, and templates the instructions point to.
+- **Progressive disclosure is the whole design principle** — Skills load in three layers so Claude only pays the context cost for what a task actually needs:
+  - **Level 1 — frontmatter**: `name` and `description` are loaded into the system prompt at startup for every available Skill, letting Claude decide relevance without reading anything else.
+  - **Level 2 — SKILL.md body**: loaded in full once Claude judges the Skill relevant to the current task.
+  - **Level 3 — linked files**: `scripts/`, `references/`, `assets/` content, read only when the body's instructions point Claude to a specific file for the specific sub-task at hand.
+- **Skills are composable** — Claude can have many Skills loaded simultaneously; a well-written Skill doesn't assume it's the only capability available and doesn't duplicate what another Skill or a tool already handles.
+- **Skills, MCP, and memory solve different problems**:
+  - **MCP** is connectivity — it gives Claude access to a system (a database, a service API) via tools it can call. Think of MCP as the professional kitchen: tools, ingredients, equipment.
+  - **Skills** are knowledge — they teach Claude *how* to use that access well: the sequence, the conventions, the judgment calls. Think of Skills as the recipes.
+  - **Memory** (e.g., an `AGENTS.md`-style file) is persistent context loaded at startup regardless of task — always-on background, not something invoked on demand the way a Skill is.
+  - A Skill that orchestrates an MCP server is common and powerful, but a Skill doesn't require MCP at all — plenty of effective Skills use only Claude's built-in capabilities (code execution, file creation).
+- **Portability** — a correctly structured Skill works the same across Claude.ai, Claude Code, and the API, as long as the environment satisfies whatever dependencies it declares.
+
+## What's in this section
+
+- **[Skill Structure & Frontmatter](./skill-structure-and-frontmatter)** — the required file layout, frontmatter fields, and naming/security rules.
+- **[Writing Effective Descriptions](./writing-effective-descriptions)** — the single highest-leverage field for getting a Skill to trigger correctly.
+- **[Progressive Disclosure & Organization](./progressive-disclosure-and-organization)** — how to structure SKILL.md and its supporting files as a Skill grows.
+- **[Workflows, Scripts & Tools](./workflows-scripts-and-tools)** — checklists, feedback loops, utility scripts, and referencing MCP tools from inside a Skill.
+- **[Testing & Iteration](./testing-and-iteration)** — evaluation-driven development and the iterative refinement loop.
+- **[Distribution & Sharing](./distribution-and-sharing)** — packaging, hosting, org deployment, and the Skills API.
+
+## Suggested reading order
+
+<Steps>
+<Step>
+
+#### Skill Structure & Frontmatter
+
+Learn the required shape before writing instructions — folder layout, `SKILL.md` naming, and the frontmatter fields Claude actually reads to decide relevance. See [Skill Structure & Frontmatter](./skill-structure-and-frontmatter).
+
+</Step>
+<Step>
+
+#### Writing Effective Descriptions
+
+The `description` field is what makes a Skill discoverable at all — get this right before investing in the body. See [Writing Effective Descriptions](./writing-effective-descriptions).
+
+</Step>
+<Step>
+
+#### Progressive Disclosure & Organization, then Workflows, Scripts & Tools
+
+Once the basics work, structure a growing Skill so Claude loads only what's relevant per task, and add workflows/scripts for anything beyond simple instructions. See [Progressive Disclosure & Organization](./progressive-disclosure-and-organization) and [Workflows, Scripts & Tools](./workflows-scripts-and-tools).
+
+</Step>
+<Step>
+
+#### Testing & Iteration, then Distribution & Sharing
+
+Validate the Skill actually triggers and performs as intended before sharing it beyond yourself. See [Testing & Iteration](./testing-and-iteration) and [Distribution & Sharing](./distribution-and-sharing).
+
+</Step>
+</Steps>
+
+<Callout type="info">
+  This reading order is a suggestion, not a requirement. Someone with a working Skill that just needs better triggering can skip straight to [Writing Effective Descriptions](./writing-effective-descriptions); someone ready to ship can jump to [Distribution & Sharing](./distribution-and-sharing).
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [LangChain — Skills in Deep Agents](https://docs.langchain.com/oss/python/deepagents/skills)
+- [MCP](../mcp/overview)

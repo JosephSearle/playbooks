@@ -1,0 +1,123 @@
+---
+title: Workflows, Scripts & Tools
+description: Checklist and feedback-loop patterns for complex multi-step tasks, writing utility scripts that solve rather than defer, and referencing MCP tools correctly from inside a Skill.
+---
+
+Many Skills are more than static instructions — they orchestrate multi-step processes, validate their own output, and call scripts or MCP tools along the way. This doc covers the patterns that keep those Skills reliable: explicit workflows instead of implied ones, feedback loops instead of one-shot attempts, and scripts written to actually solve problems rather than punt them back to Claude.
+
+<Callout type="info">
+  This doc covers **workflows, scripts, and referencing tools (including MCP tools) from a Skill**. It assumes the organization principles from [Progressive Disclosure & Organization](./progressive-disclosure-and-organization). For the MCP protocol underlying any MCP tool a Skill calls, see [Build a Server](../mcp/build-server) and [Authorization & Security](../mcp/authorization-and-security).
+</Callout>
+
+## Core concepts
+
+- **Break complex operations into an explicit, checkable workflow** — for anything with more than a couple of steps, provide a checklist Claude can copy into its response and check off as it progresses. This prevents skipped steps, especially validation steps that feel skippable in the moment.
+- **The feedback-loop pattern (run validator → fix errors → repeat) dramatically improves output quality** — whether the "validator" is a script (`python scripts/validate.py`) or a reference document Claude compares output against (a style guide), looping until validation passes catches errors that a single pass misses.
+- **Scripts should solve problems, not defer them to Claude** — a script that fails on a missing file or bad permission should handle that case explicitly (create a default, log and continue, return a clear error) rather than raising an exception and leaving Claude to improvise a recovery.
+- **No "voodoo constants"** — every magic number in a script needs a reason documented next to it. If you can't justify why a timeout is 30 seconds rather than 45, Claude can't either, and won't know when to adjust it.
+- **Be explicit about execute vs. read-as-reference** — most utility scripts should be *executed* ("Run `analyze_form.py` to extract fields"), which is more reliable and token-cheaper than having Claude regenerate equivalent logic. Some scripts exist purely as documented algorithms Claude should *read* ("See `validate.py` for the field-matching logic"). State which one applies; don't leave it ambiguous.
+- **Declare package dependencies explicitly, never assume they're installed** — state what's required (`pip install pypdf`) before showing code that imports it, since the code-execution environment for API-based Skills has no network access or runtime package installation.
+- **MCP tool references need the fully-qualified name** — `ServerName:tool_name` (e.g., `BigQuery:bigquery_schema`, `GitHub:create_issue`), not just the bare tool name. Without the server prefix, Claude can fail to locate the tool when multiple MCP servers are connected — see [Build a Server](../mcp/build-server) for how servers expose and name tools in the first place.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Write a workflow as a copyable checklist
+
+- **Action**: For any multi-step process, give Claude a checklist to copy into its response and update as it progresses.
+  ```markdown
+  ## PDF form filling workflow
+
+  Copy this checklist and check off items as you complete them:
+  \`\`\`
+  Task Progress:
+  - [ ] Step 1: Analyze the form (run analyze_form.py)
+  - [ ] Step 2: Create field mapping (edit fields.json)
+  - [ ] Step 3: Validate mapping (run validate_fields.py)
+  - [ ] Step 4: Fill the form (run fill_form.py)
+  - [ ] Step 5: Verify output (run verify_output.py)
+  \`\`\`
+  ```
+- **Result**: Progress stays visible and each step's completion is explicit — a validation step doesn't quietly get skipped because it "seemed done already."
+
+</Step>
+<Step>
+
+#### Add a feedback loop around anything quality-sensitive
+
+- **Action**: Pair generation with a validation step and an explicit repeat-until-pass instruction.
+  ```markdown
+  ## Document editing process
+  1. Make your edits to `word/document.xml`
+  2. **Validate immediately**: `python ooxml/scripts/validate.py unpacked_dir/`
+  3. If validation fails:
+     - Review the error message carefully
+     - Fix the issues in the XML
+     - Run validation again
+  4. **Only proceed when validation passes**
+  5. Rebuild and test the output document
+  ```
+- **Result**: Errors get caught at the point they're introduced, not discovered downstream after several more steps have compounded on top of a bad edit.
+
+</Step>
+<Step>
+
+#### Write scripts that handle failure explicitly
+
+- **Action**: Handle the error cases a script can reasonably anticipate, instead of letting them propagate as an opaque exception.
+  ```python
+  def process_file(path):
+      """Process a file, creating it if it doesn't exist."""
+      try:
+          with open(path) as f:
+              return f.read()
+      except FileNotFoundError:
+          print(f"File {path} not found, creating default")
+          with open(path, "w") as f:
+              f.write("")
+          return ""
+      except PermissionError:
+          print(f"Cannot access {path}, using default")
+          return ""
+  ```
+  And document any constant used:
+  ```python
+  # HTTP requests typically complete within 30 seconds;
+  # longer timeout accounts for slow connections
+  REQUEST_TIMEOUT = 30
+  ```
+- **Result**: Claude doesn't have to improvise a recovery path for a predictable failure, and a future maintainer (human or Claude) can tell whether `REQUEST_TIMEOUT = 30` is load-bearing or arbitrary.
+
+</Step>
+<Step>
+
+#### Reference MCP tools by their fully-qualified name
+
+- **Action**: Always prefix an MCP tool reference with its server name.
+  ```markdown
+  Use the BigQuery:bigquery_schema tool to retrieve table schemas.
+  Use the GitHub:create_issue tool to create issues.
+  ```
+- **Result**: Claude resolves the exact tool even when multiple MCP servers are connected simultaneously and might otherwise expose similarly-named tools.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **A workflow described in prose with no checklist** — for anything beyond 2-3 steps, an unstructured paragraph is easier to partially follow (and skip steps from) than an explicit checklist.
+  - **No feedback loop on quality-critical output** — a single-pass generate-and-done approach misses errors a validate-and-retry loop would have caught.
+  - **A script that raises and stops instead of handling the anticipated failure** — defeats the purpose of providing a script in the first place if Claude still has to improvise around its failures.
+  - **Undocumented magic numbers** — if a constant's value can't be justified in a comment, it's a signal the value itself hasn't been thought through.
+  - **Bare MCP tool names without the `ServerName:` prefix** — works fine with only one server connected, breaks silently once a second server exposes a same-named tool.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Progressive Disclosure & Organization](./progressive-disclosure-and-organization)
+- [Build a Server](../mcp/build-server)
+- [Authorization & Security](../mcp/authorization-and-security)

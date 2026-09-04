@@ -1,0 +1,127 @@
+---
+title: Testing & Iteration
+description: Evaluation-driven Skill development, the three areas worth testing, and the iterative refinement loop that improves a Skill based on observed behavior rather than assumptions.
+---
+
+A Skill that's never been tested against real requests is a set of assumptions, not a working tool. Effective Skill development starts from evaluations, not documentation — write down what should happen before writing extensive instructions for how, so the Skill solves problems that are actually real rather than ones that seemed plausible while writing it.
+
+<Callout type="info">
+  This doc covers **testing a Skill and iterating on it based on observed behavior**. It assumes a working first draft per [Skill Structure & Frontmatter](./skill-structure-and-frontmatter) and [Writing Effective Descriptions](./writing-effective-descriptions).
+</Callout>
+
+## Core concepts
+
+- **Build evaluations before writing extensive documentation** — run representative tasks without the Skill first, note specific failures or missing context, then write just enough instruction to close those gaps. This keeps the Skill grounded in real problems instead of imagined ones.
+- **Three testing rigor levels, matched to how visible and high-stakes the Skill is**: manual testing (run queries directly, observe — fast, no setup, right for early iteration), scripted testing (automated test cases for repeatable validation across changes), and programmatic evaluation suites (systematic runs against defined test sets — right for a Skill deployed broadly).
+- **Cover three distinct testing areas**:
+  - **Triggering tests** — does it load on obvious tasks and paraphrased requests, and correctly *not* load on unrelated ones?
+  - **Functional tests** — does it produce correct outputs, succeed at its API/tool calls, handle errors, cover edge cases?
+  - **Performance comparison** — does using the Skill actually beat the same task attempted without it (fewer back-and-forth messages, fewer failed calls, fewer tokens)?
+- **Iterate on one hard task before expanding to broad coverage** — working a single challenging case until it succeeds, then extracting the winning approach into the Skill, gives faster signal than testing many cases against a half-finished Skill. Broaden to a full test suite only once that foundation works.
+- **The two-instance refinement loop is the most effective development process**: one Claude instance ("Claude A") helps design and refine the Skill; a separate instance ("Claude B") uses it on real tasks. Observations from Claude B's actual behavior — where it struggled, what it missed — feed back to Claude A for the next revision. This works because Claude understands both how to write effective agent instructions and what information an agent actually needs.
+- **Triggering, over-triggering, and execution problems each have a distinct signature and a distinct fix** (see the pattern below) — diagnosing which one occurred is a prerequisite to fixing it correctly.
+
+## Implementing the pattern
+
+<Steps>
+<Step>
+
+#### Define success criteria before testing
+
+- **Action**: Set concrete, if approximate, targets across quantitative and qualitative dimensions.
+  ```
+  Quantitative:
+  - Skill triggers on ~90% of relevant test queries
+  - Completes the workflow in a comparable or fewer tool calls than the unaided baseline
+  - Zero failed API/tool calls per successful run
+
+  Qualitative:
+  - Claude doesn't need to ask the user for next steps mid-task
+  - Repeated runs of the same request produce structurally consistent output
+  ```
+- **Result**: A concrete (if rough) bar to test against, rather than a vague sense of "seems to work" — treat these as aspirational targets, not precise thresholds.
+
+</Step>
+<Step>
+
+#### Test triggering with should/should-not query sets
+
+- **Action**: Write both sides explicitly.
+  ```
+  Should trigger:
+  - "Help me set up a new ProjectHub workspace"
+  - "I need to create a project in ProjectHub"
+  - "Initialize a ProjectHub project for Q4 planning"
+
+  Should NOT trigger:
+  - "What's the weather in San Francisco?"
+  - "Help me write Python code"
+  - "Create a spreadsheet" (unless this Skill handles spreadsheets)
+  ```
+- **Result**: Confirms the description (see [Writing Effective Descriptions](./writing-effective-descriptions)) is neither too narrow nor too broad, using concrete phrasing a real user might type.
+
+</Step>
+<Step>
+
+#### Run functional tests against a given/when/then case
+
+- **Action**: Specify inputs and expected observable outcomes explicitly.
+  ```
+  Test: Create project with 5 tasks
+  Given: Project name "Q4 Planning", 5 task descriptions
+  When: Skill executes the workflow
+  Then:
+    - Project created in ProjectHub
+    - 5 tasks created with correct properties
+    - All tasks linked to the project
+    - No API errors
+  ```
+- **Result**: A pass/fail check independent of subjective judgment — either the project and tasks exist correctly afterward, or they don't.
+
+</Step>
+<Step>
+
+#### Compare against the no-Skill baseline
+
+- **Action**: Run the same representative task with and without the Skill loaded, and record the difference.
+  ```
+  Without skill: 15 back-and-forth messages, 3 failed API calls requiring retry, 12,000 tokens
+  With skill:     2 clarifying questions, 0 failed API calls, 6,000 tokens
+  ```
+- **Result**: Concrete evidence the Skill is actually earning its context cost, not just a plausible-sounding addition.
+
+</Step>
+<Step>
+
+#### Iterate using the Claude-A / Claude-B loop
+
+- **Action**: Work a real task with Claude A to design/refine the Skill; hand it to a fresh Claude B instance for real usage; bring specific observed failures back to Claude A.
+  ```
+  Observation to bring back: "When I asked Claude B for a regional sales
+  report, it wrote the query but forgot to filter out test accounts,
+  even though the Skill mentions this rule."
+
+  Ask Claude A: "I noticed Claude B forgot to filter test accounts when
+  I asked for a regional report. The Skill mentions filtering, but maybe
+  it's not prominent enough — how should we restructure this?"
+  ```
+- **Result**: Each revision is grounded in a specific, observed gap rather than a hypothetical one — Claude A might suggest moving the rule earlier, using stronger language ("MUST filter" instead of "always filter"), or restructuring the workflow section entirely.
+
+</Step>
+</Steps>
+
+<Callout type="warn">
+  Common mistakes to check for:
+  - **Writing extensive documentation before any evaluation exists** — risks solving problems the Skill will never actually encounter while missing the ones it will.
+  - **Testing broad coverage before a single hard case works end-to-end** — get one difficult, representative task fully working first; broad testing against a shaky foundation just generates noisy, hard-to-interpret failures.
+  - **Applying the wrong fix for the observed symptom** — under-triggering needs more descriptive detail; over-triggering needs negative triggers and narrower scope; execution failures need better instructions or error handling. Misdiagnosing which one occurred makes the actual problem worse.
+  - **No performance baseline** — without a without-the-Skill comparison, there's no way to know whether the Skill is actually helping or just adding context overhead.
+  - **Treating a single successful test run as validation** — run the same request multiple times; inconsistent output on repeated identical requests is itself a signal worth investigating.
+</Callout>
+
+## References
+
+- [Claude — Skill Authoring Best Practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Claude — The Complete Guide to Building Skills for Claude](https://resources.anthropic.com/hubfs/The-Complete-Guide-to-Building-Skill-for-Claude.pdf)
+- [Writing Effective Descriptions](./writing-effective-descriptions)
+- [Distribution & Sharing](./distribution-and-sharing)
