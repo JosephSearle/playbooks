@@ -11,7 +11,7 @@
 </div>
 
 A personal documentation site for AI engineering runbooks — RAG, agents, MCP, observability,
-data sync, and vector management — built with [Fumadocs](https://fumadocs.dev) on Next.js 16.
+data sync, and vector management — built with [Fumadocs](https://fumadocs.dev) on Next.js 16. <I changed this>
 
 ## Contents
 
